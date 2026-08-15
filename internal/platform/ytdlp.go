@@ -95,10 +95,7 @@ func (p *YtDlpProvider) DownloadWithQuality(ctx context.Context, rawURL, destDir
 	return p.download(ctx, rawURL, destDir, quality)
 }
 
-// download shells out to yt-dlp with an argument slice — never a shell
-// string — so nothing in rawURL can break out into a shell command.
-func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality string) ([]MediaFile, error) {
-	outTemplate := filepath.Join(destDir, "%(id)s.%(ext)s")
+func (p *YtDlpProvider) baseArgs(outTemplate, quality string) []string {
 	args := []string{
 		"--no-playlist",
 		"--output", outTemplate,
@@ -111,10 +108,35 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 	if quality != "" {
 		args = append(args, strings.Fields(quality)...)
 	}
-	args = append(args, rawURL)
+	return args
+}
+
+// download shells out to yt-dlp with an argument slice — never a shell
+// string — so nothing in rawURL can break out into a shell command.
+func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality string) ([]MediaFile, error) {
+	outTemplate := filepath.Join(destDir, "%(id)s.%(ext)s")
+	args := append(p.baseArgs(outTemplate, quality), rawURL)
 
 	cmd := exec.CommandContext(ctx, p.binPath, args...)
 	out, err := cmd.CombinedOutput()
+
+	// ponytail: image-only Instagram carousels have no video formats, and
+	// yt-dlp errors instead of just grabbing the images (yt-dlp/yt-dlp#17077).
+	// Retry asking for thumbnails only; yt-dlp still exits non-zero here even
+	// on success, so fall back to checking destDir for what actually landed.
+	if err != nil && strings.Contains(string(out), "No video formats found") {
+		retryArgs := append(p.baseArgs(outTemplate, quality),
+			"--write-thumbnail", "--skip-download", "--ignore-no-formats-error", rawURL)
+		cmd = exec.CommandContext(ctx, p.binPath, retryArgs...)
+		retryOut, _ := cmd.CombinedOutput()
+		// The thumbnail-only path never fires the after_move print hook, so
+		// go straight to listing what actually landed in destDir.
+		paths, _ := filepath.Glob(filepath.Join(destDir, "*"))
+		if len(paths) == 0 {
+			return nil, fmt.Errorf("yt-dlp failed: %s", truncate(string(retryOut), 500))
+		}
+		return toMediaFiles(paths), nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed: %w (%s)", err, truncate(string(out), 500))
 	}
@@ -123,12 +145,15 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("yt-dlp produced no output files")
 	}
+	return toMediaFiles(paths), nil
+}
 
+func toMediaFiles(paths []string) []MediaFile {
 	files := make([]MediaFile, 0, len(paths))
 	for _, path := range paths {
 		files = append(files, MediaFile{Path: path, Kind: KindFromExt(path)})
 	}
-	return files, nil
+	return files
 }
 
 func parsePrintedPaths(out string) []string {
