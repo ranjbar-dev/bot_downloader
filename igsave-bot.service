@@ -1,0 +1,25 @@
+[Unit]
+Description=igsave-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/igsave-bot/config.env
+ExecStart=/opt/igsave-bot/igsave-bot
+Restart=on-failure
+RestartSec=5
+User=igsave-bot
+Group=igsave-bot
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/igsave-bot
+PrivateTmp=true
+
+# Guardrail for small VPS boxes (e.g. 1GB RAM): caps bot + its yt-dlp/ffmpeg
+# children (same cgroup) so a runaway download can only crash this service,
+# never OOM-kill sshd or the rest of the box. Tune to your box's RAM.
+MemoryMax=700M
+
+[Install]
+WantedBy=multi-user.target

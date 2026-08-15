@@ -1,0 +1,7 @@
+[Unit]
+Description=Self-update yt-dlp (mitigates Instagram extractor breakage)
+
+[Service]
+Type=oneshot
+User=igsave-bot
+ExecStart=/usr/local/bin/yt-dlp -U
