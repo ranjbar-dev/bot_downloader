@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o igsave-bot ./cmd/igsave-bot
+      - run: go vet ./...
+      - run: go test ./...
+
+  deploy:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            set -e
+            cd /opt/igsave-bot/src
+            git pull --ff-only origin main
+            go build -o /opt/igsave-bot/igsave-bot ./cmd/igsave-bot
+            sudo chown igsave-bot:igsave-bot /opt/igsave-bot/igsave-bot
+            sudo systemctl restart igsave-bot
