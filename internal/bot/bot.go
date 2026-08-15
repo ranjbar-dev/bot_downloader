@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -72,7 +73,23 @@ func New(cfg *config.Config, registry *platform.Registry, members *store.Store) 
 }
 
 func (bot *Bot) Run() error {
-	b, err := gotgbot.NewBot(bot.cfg.BotToken, nil)
+	var botOpts *gotgbot.BotOpts
+	if bot.cfg.BotAPIURL != "" {
+		// The default 5s per-request timeout is fine against the public API,
+		// where 50MB is the ceiling. A local server sends multi-GB files to
+		// Telegram while our POST is still open, so the send call can block for
+		// minutes - that timeout has to cover the whole transfer, not just the
+		// handover.
+		botOpts = &gotgbot.BotOpts{
+			BotClient: &gotgbot.BaseBotClient{
+				DefaultRequestOpts: &gotgbot.RequestOpts{
+					APIURL:  bot.cfg.BotAPIURL,
+					Timeout: 15 * time.Minute,
+				},
+			},
+		}
+	}
+	b, err := gotgbot.NewBot(bot.cfg.BotToken, botOpts)
 	if err != nil {
 		return fmt.Errorf("new bot: %w", err)
 	}
@@ -393,14 +410,36 @@ func (bot *Bot) caption(j job) string {
 	return fmt.Sprintf("📥 via @%s\n🔗 %s", bot.botUsername, j.rawURL)
 }
 
+// mediaInput builds the InputFile for a downloaded file, plus a cleanup func
+// the caller must always call. Against a local Bot API server the file is
+// handed over as a filesystem path, so neither this process nor the HTTP layer
+// ever buffers the media - that is what makes multi-GB sends affordable on a
+// small VPS. Against the public API it has to be streamed as multipart form
+// data, which means holding the file open for the duration of the request.
+func (bot *Bot) mediaInput(path string) (gotgbot.InputFileOrString, func(), error) {
+	if bot.cfg.BotAPIURL != "" {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		// InputFileByID passes the string through as the raw field value, which
+		// is exactly what a --local server expects for a filesystem path.
+		return gotgbot.InputFileByID(abs), func() {}, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gotgbot.InputFileByReader(fileBase(path), file), func() { file.Close() }, nil
+}
+
 func (bot *Bot) sendSingle(j job, f platform.MediaFile) error {
-	file, err := os.Open(f.Path)
+	input, cleanup, err := bot.mediaInput(f.Path)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer cleanup()
 
-	input := gotgbot.InputFileByReader(fileBase(f.Path), file)
 	caption := bot.caption(j)
 	switch f.Kind {
 	case platform.KindPhoto:
@@ -421,15 +460,14 @@ func (bot *Bot) sendGroup(j job, files []platform.MediaFile) error {
 		chunk := files[i:end]
 
 		media := make([]gotgbot.InputMedia, 0, len(chunk))
-		openFiles := make([]*os.File, 0, len(chunk))
+		cleanups := make([]func(), 0, len(chunk))
 		for idx, f := range chunk {
-			file, err := os.Open(f.Path)
+			input, cleanup, err := bot.mediaInput(f.Path)
 			if err != nil {
-				closeAll(openFiles)
+				runAll(cleanups)
 				return err
 			}
-			openFiles = append(openFiles, file)
-			input := gotgbot.InputFileByReader(fileBase(f.Path), file)
+			cleanups = append(cleanups, cleanup)
 
 			// Telegram renders only the first item's caption as the album caption.
 			itemCaption := ""
@@ -444,7 +482,7 @@ func (bot *Bot) sendGroup(j job, files []platform.MediaFile) error {
 		}
 
 		_, err := j.b.SendMediaGroup(j.chatID, media, nil)
-		closeAll(openFiles)
+		runAll(cleanups)
 		if err != nil {
 			return err
 		}
@@ -452,9 +490,9 @@ func (bot *Bot) sendGroup(j job, files []platform.MediaFile) error {
 	return nil
 }
 
-func closeAll(files []*os.File) {
-	for _, f := range files {
-		f.Close()
+func runAll(cleanups []func()) {
+	for _, c := range cleanups {
+		c()
 	}
 }
 

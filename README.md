@@ -142,6 +142,82 @@ sudo systemctl restart igsave-bot
 - **yt-dlp staleness**: the `igsave-bot-ytdlp-update.timer` runs `yt-dlp -U` weekly. If downloads start failing across the board (not just one post), run `sudo -u igsave-bot yt-dlp -U` manually first — it's the most common cause.
 - **Restarting**: `Restart=on-failure` in the unit means a crash auto-recovers; in-flight downloads at the moment of a restart are lost (not resumed), which is acceptable for personal use.
 
+## Local Bot API server (optional — raises 50MB to ~2GB)
+
+The public Bot API refuses uploads over 50MB. Running Telegram's own `telegram-bot-api` server locally raises that to 2000 MB. The bot needs no code change to opt in or out: `TELEGRAM_BOT_API_URL` unset = public API, set = local server.
+
+`TELEGRAM_API_ID` / `TELEGRAM_API_HASH` come from [my.telegram.org](https://my.telegram.org) → "API development tools". **They are a user-account app credential, not your bot token, and the two are not interchangeable** — the server needs both: the app credential to exist as a Telegram client, and (per request) the bot token to act as your bot.
+
+### 1. Build it
+
+There are no official prebuilt binaries; it compiles from source. This is the expensive step — roughly 30–60 min on one core, and it wants ~2GB of memory to get through the heaviest translation units. Add swap first (see the sizing section) if you have 2GB RAM or less.
+
+```bash
+sudo apt update && sudo apt install -y make git zlib1g-dev libssl-dev gperf cmake g++
+git clone --recursive https://github.com/tdlib/telegram-bot-api.git /tmp/telegram-bot-api
+mkdir -p /tmp/telegram-bot-api/build && cd /tmp/telegram-bot-api/build
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr/local ..
+# -j1 on purpose: parallel jobs are what push a small box into the OOM killer
+sudo cmake --build . --target install -j1
+telegram-bot-api --version
+```
+
+```bash
+sudo mkdir -p /var/lib/telegram-bot-api
+sudo chown igsave-bot:igsave-bot /var/lib/telegram-bot-api
+```
+
+### 2. Log the bot out of the cloud API
+
+A bot can only be served by one API server at a time. Telegram requires an explicit `logOut` against the public server before a local one will accept it — until you do this, the local server answers `401 Unauthorized`.
+
+> **This drops your bot's session on api.telegram.org.** In-flight updates are lost, and the bot is unreachable until the local server is up. Reversible: to move back, call `logOut` against the local server (`http://127.0.0.1:8081/bot<TOKEN>/logOut`), then unset `TELEGRAM_BOT_API_URL`. Do this during a quiet moment, not mid-download.
+
+```bash
+curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/logOut"   # -> {"ok":true,"result":true}
+```
+
+### 3. Configure
+
+In `/opt/igsave-bot/config.env`:
+
+```
+TELEGRAM_BOT_API_URL=http://127.0.0.1:8081
+TELEGRAM_API_ID=1234567
+TELEGRAM_API_HASH=your32charhash
+TELEGRAM_MAX_UPLOAD_MB=2000
+JOB_TIMEOUT_SECONDS=1800
+```
+
+`JOB_TIMEOUT_SECONDS` is not optional here: it caps the whole download, and a 2GB file will not arrive inside the 120s default — yt-dlp gets killed mid-file and the user sees a failure. Both services read this same file.
+
+### 4. Start it
+
+```bash
+sudo cp telegram-bot-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-bot-api.service
+sudo systemctl restart igsave-bot.service
+sudo journalctl -u telegram-bot-api -f
+```
+
+### 5. Verify
+
+```bash
+curl -s "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/getMe"   # {"ok":true,...} = server is serving your bot
+systemd-cgtop -1 --order=memory | head            # memory per service during a big send
+```
+
+Then send a >50MB video link through the bot and watch it succeed where it previously replied "too large".
+
+### Notes
+
+- **Bound to loopback** (`--http-ip-address=127.0.0.1`). The server's only authentication is the bot token in the URL path — anyone who can reach port 8081 controls your bot. Never expose it publicly.
+- **Runs as `igsave-bot`.** With `--local`, the bot passes *file paths* rather than uploading bytes, so the server reads media straight out of `CACHE_DIR`. Same user = no permission juggling. If you change `CACHE_DIR`, update `ReadWritePaths` in both units.
+- **Memory grows and doesn't come back** after a transfer (tdlib/telegram-bot-api#514, #645). `MemoryMax=768M` + `Restart=always` in the unit turn that into a cheap periodic restart. If large sends start failing, raise it in 128M steps rather than jumping to 1GB+.
+- **RAM budget**: `igsave-bot` (`MemoryMax=700M`) + `telegram-bot-api` (`MemoryMax=768M`) ≈ 1.5GB of caps on a 2GB box. That's deliberately tight against the OS; keep swap enabled.
+- **Disk**: at a 2000 MB ceiling the cache fills far faster. `CACHE_MAX_MB=10000` now holds ~5 entries — still correct, just a lower hit rate. Lower `CACHE_TTL_SECONDS` if you'd rather churn than cache.
+
 ## Sizing for a small VPS (1 CPU / 1GB RAM / 30GB disk)
 
 This is the profile the defaults are tuned for. If your box looks like this:

@@ -1,0 +1,44 @@
+[Unit]
+Description=Local Telegram Bot API server (lifts the 50MB upload cap to ~2GB)
+After=network-online.target
+Wants=network-online.target
+Before=igsave-bot.service
+
+[Service]
+Type=simple
+# TELEGRAM_API_ID / TELEGRAM_API_HASH live in the same file as the bot's config.
+# They are a *user* app credential from my.telegram.org, not the bot token.
+EnvironmentFile=/opt/igsave-bot/config.env
+ExecStart=/usr/local/bin/telegram-bot-api \
+    --api-id=${TELEGRAM_API_ID} \
+    --api-hash=${TELEGRAM_API_HASH} \
+    --local \
+    --http-ip-address=127.0.0.1 \
+    --http-port=8081 \
+    --dir=/var/lib/telegram-bot-api \
+    --verbosity=0
+
+# Runs as the bot's own user so it can read downloaded media straight out of
+# CACHE_DIR without any group/permission juggling - with --local the bot hands
+# over file paths, not file contents, so the server needs read access to them.
+User=igsave-bot
+Group=igsave-bot
+
+# This server has no auth beyond the bot token in the URL path. --http-ip-address
+# already binds it to loopback; do not publish port 8081.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/telegram-bot-api /var/lib/igsave-bot
+PrivateTmp=true
+
+# Restart=always, not on-failure: telegram-bot-api does not release the RAM it
+# used for a transfer once that transfer finishes (tdlib/telegram-bot-api#514,
+# #645). MemoryMax turns that slow leak into a cheap restart instead of an
+# OOM kill that takes the box down with it. Raise in 128M steps if large sends
+# start dying.
+MemoryMax=768M
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

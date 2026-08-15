@@ -14,7 +14,10 @@ Env vars (loaded via `config.env`, plain `os.Getenv` + a small loader — no con
 | `CACHE_MAX_MB` | no (default `10000`) | | Hard cap on cache disk usage; `0` = unlimited (TTL-only) |
 | `YT_DLP_PATH` | no (default `yt-dlp` from `PATH`) | | Override binary location |
 | `TELEGRAM_MAX_UPLOAD_MB` | no (default `50`) | | Set to `2000` only if a local Bot API server is running |
+| `TELEGRAM_BOT_API_URL` | no (default public API) | `http://127.0.0.1:8081` | Local Bot API server; also switches sends to hand-over-by-path |
+| `TELEGRAM_API_ID` | only for the local server | `1234567` | my.telegram.org user app credential — read by `telegram-bot-api`, not by the bot |
+| `TELEGRAM_API_HASH` | only for the local server | | Same; **not** the bot token |
 | `WORKER_COUNT` | no (default `2`) | | Concurrent download workers — set to `1` on a single-CPU VPS |
-| `JOB_TIMEOUT_SECONDS` | no (default `120`) | | Per-download timeout |
+| `JOB_TIMEOUT_SECONDS` | no (default `120`) | | Per-download timeout — raise to ~`1800` if `TELEGRAM_MAX_UPLOAD_MB` is raised, a 2GB download does not finish in 120s |
 
 Note: `DB_PATH` (SQLite membership store) was added after this spec section was written — see `CLAUDE.md` → "SQLite (channel membership)" and `internal/config/config.go` for the current default and behavior.

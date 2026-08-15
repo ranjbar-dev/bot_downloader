@@ -15,6 +15,7 @@ type Config struct {
 	CacheTTLSeconds   int
 	CacheMaxMB        int
 	YtDlpPath         string
+	BotAPIURL         string
 	MaxUploadMB       int
 	WorkerCount       int
 	JobTimeoutSeconds int
@@ -35,6 +36,11 @@ func Load() (*Config, error) {
 		CacheTTLSeconds:   getEnvIntDefault("CACHE_TTL_SECONDS", 3600),
 		CacheMaxMB:        getEnvIntDefault("CACHE_MAX_MB", 10000),
 		YtDlpPath:         getEnvDefault("YT_DLP_PATH", "yt-dlp"),
+		// Empty means the public Bot API (50MB upload cap). Set to a local
+		// telegram-bot-api server (e.g. http://127.0.0.1:8081) to lift that to
+		// ~2GB; the bot then also hands files over by path instead of
+		// uploading them, so raise TELEGRAM_MAX_UPLOAD_MB alongside it.
+		BotAPIURL:         getEnvDefault("TELEGRAM_BOT_API_URL", ""),
 		MaxUploadMB:       getEnvIntDefault("TELEGRAM_MAX_UPLOAD_MB", 50),
 		WorkerCount:       getEnvIntDefault("WORKER_COUNT", 2),
 		JobTimeoutSeconds: getEnvIntDefault("JOB_TIMEOUT_SECONDS", 120),
