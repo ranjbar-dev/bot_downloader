@@ -11,7 +11,7 @@ import (
 func TestLookupMissThenHitThenExpiry(t *testing.T) {
 	dir := t.TempDir()
 	c := New(dir, 50*time.Millisecond, 0)
-	key := Key("https://example.com/x")
+	key := Key("https://example.com/x", "")
 
 	release := c.Lock(key)
 	if _, ok := c.Lookup(key); ok {
@@ -89,7 +89,7 @@ func TestEnforceCapEvictsOldestFirst(t *testing.T) {
 func TestKeyedLockSerializesSameKey(t *testing.T) {
 	dir := t.TempDir()
 	c := New(dir, time.Hour, 0)
-	key := Key("https://example.com/y")
+	key := Key("https://example.com/y", "")
 
 	release := c.Lock(key)
 	unlocked := make(chan struct{})

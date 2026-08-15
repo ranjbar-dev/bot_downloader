@@ -10,6 +10,8 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 var urlRe = regexp.MustCompile(`https?://\S+`)
 
 const checkJoinCallback = "check_join"
+const qualityCallbackPrefix = "q:"
 
 type Bot struct {
 	cfg         *config.Config
@@ -39,8 +42,9 @@ type Bot struct {
 	jobs        chan job
 	botUsername string
 
-	pendingMu sync.Mutex
-	pending   map[int64]job // last blocked request per user, retried from the "I joined" button
+	pendingMu      sync.Mutex
+	pending        map[int64]job // last blocked request per user, retried from the "I joined" button
+	pendingQuality map[int64]job // last request per user awaiting a quality pick
 }
 
 type job struct {
@@ -49,18 +53,20 @@ type job struct {
 	userID      int64
 	rawURL      string
 	provider    platform.Provider
+	quality     string // Value from platform.Quality, "" if provider has no quality choice
 	statusMsgID int64
 }
 
 func New(cfg *config.Config, registry *platform.Registry, members *store.Store) *Bot {
 	return &Bot{
-		cfg:      cfg,
-		registry: registry,
-		gate:     newGate(cfg.GateChannel, cfg.GateInviteLink, members),
-		limiter:  newRateLimiter(5, 10*time.Minute),
-		cache:    cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
-		jobs:     make(chan job, 50),
-		pending:  make(map[int64]job),
+		cfg:            cfg,
+		registry:       registry,
+		gate:           newGate(cfg.GateChannel, cfg.GateInviteLink, members),
+		limiter:        newRateLimiter(5, 10*time.Minute),
+		cache:          cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
+		jobs:           make(chan job, 50),
+		pending:        make(map[int64]job),
+		pendingQuality: make(map[int64]job),
 	}
 }
 
@@ -84,6 +90,7 @@ func (bot *Bot) Run() error {
 	dispatcher.AddHandler(handlers.NewCommand("start", bot.handleStart))
 	dispatcher.AddHandler(handlers.NewMessage(message.Text, bot.handleMessage))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Equal(checkJoinCallback), bot.handleCheckJoin))
+	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Prefix(qualityCallbackPrefix), bot.handleQuality))
 	dispatcher.AddHandler(handlers.NewChatMember(chatmember.ChatId(bot.cfg.GateChannel), bot.handleChatMember))
 
 	updater := ext.NewUpdater(dispatcher, nil)
@@ -106,7 +113,7 @@ func (bot *Bot) Run() error {
 
 func (bot *Bot) handleStart(b *gotgbot.Bot, ctx *ext.Context) error {
 	_, err := ctx.EffectiveMessage.Reply(b,
-		"👋 Send an Instagram link to download it. You need to be a member of our channel to use this bot.",
+		"👋 Send an Instagram, TikTok, YouTube, Pornhub, or Spotify link to download it. You need to be a member of our channel to use this bot.",
 		&gotgbot.SendMessageOpts{ReplyMarkup: bot.joinKeyboard()})
 	return err
 }
@@ -171,7 +178,28 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 		return replyErr
 	}
 
+	if qp, ok := provider.(platform.QualityProvider); ok {
+		if qualities := qp.Qualities(); len(qualities) > 0 {
+			bot.setPendingQuality(userID, j)
+			_, replyErr := msg.Reply(b, "🎚 Choose quality:", &gotgbot.SendMessageOpts{ReplyMarkup: qualityKeyboard(qualities)})
+			return replyErr
+		}
+	}
+
 	return bot.enqueue(b, j)
+}
+
+// qualityKeyboard renders each Quality as its own button row, the button's
+// callback data carrying only the option's index into that provider's
+// Qualities() slice (never the format string itself, which can run long).
+func qualityKeyboard(qualities []platform.Quality) gotgbot.InlineKeyboardMarkup {
+	rows := make([][]gotgbot.InlineKeyboardButton, 0, len(qualities))
+	for i, q := range qualities {
+		rows = append(rows, []gotgbot.InlineKeyboardButton{
+			{Text: q.Label, CallbackData: fmt.Sprintf("%s%d", qualityCallbackPrefix, i)},
+		})
+	}
+	return gotgbot.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 // enqueue sends the "Downloading..." status message, then submits j to the
@@ -210,6 +238,50 @@ func (bot *Bot) takePending(userID int64) (job, bool) {
 	return j, ok
 }
 
+func (bot *Bot) setPendingQuality(userID int64, j job) {
+	bot.pendingMu.Lock()
+	bot.pendingQuality[userID] = j
+	bot.pendingMu.Unlock()
+}
+
+func (bot *Bot) takePendingQuality(userID int64) (job, bool) {
+	bot.pendingMu.Lock()
+	defer bot.pendingMu.Unlock()
+	j, ok := bot.pendingQuality[userID]
+	if ok {
+		delete(bot.pendingQuality, userID)
+	}
+	return j, ok
+}
+
+// handleQuality responds to a quality-selection button: resolves the picked
+// index against the pending job's own provider.Qualities() (never trusting
+// the callback's format string directly) and enqueues the download.
+func (bot *Bot) handleQuality(b *gotgbot.Bot, ctx *ext.Context) error {
+	cq := ctx.CallbackQuery
+	userID := ctx.EffectiveUser.Id
+
+	j, ok := bot.takePendingQuality(userID)
+	if !ok {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "⌛ That request expired, send the link again.", ShowAlert: true})
+		return nil
+	}
+	qp, ok := j.provider.(platform.QualityProvider)
+	if !ok {
+		return nil
+	}
+	qualities := qp.Qualities()
+	idx, err := strconv.Atoi(strings.TrimPrefix(cq.Data, qualityCallbackPrefix))
+	if err != nil || idx < 0 || idx >= len(qualities) {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "❌ Invalid choice.", ShowAlert: true})
+		return nil
+	}
+
+	j.quality = qualities[idx].Value
+	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ " + qualities[idx].Label})
+	return bot.enqueue(b, j)
+}
+
 // handleCheckJoin responds to the "I joined the channel" button: re-checks
 // membership and, if it now passes, runs the request that triggered the gate.
 func (bot *Bot) handleCheckJoin(b *gotgbot.Bot, ctx *ext.Context) error {
@@ -245,7 +317,7 @@ func (bot *Bot) worker() {
 }
 
 func (bot *Bot) process(j job) {
-	key := cache.Key(j.rawURL)
+	key := cache.Key(j.rawURL, j.quality)
 	release := bot.cache.Lock(key)
 	defer release()
 
@@ -282,7 +354,12 @@ func (bot *Bot) download(j job, key string) ([]platform.MediaFile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(bot.cfg.JobTimeoutSeconds)*time.Second)
 	defer cancel()
 
-	files, err := j.provider.Download(ctx, j.rawURL, dir)
+	var files []platform.MediaFile
+	if j.quality != "" {
+		files, err = j.provider.(platform.QualityProvider).DownloadWithQuality(ctx, j.rawURL, dir, j.quality)
+	} else {
+		files, err = j.provider.Download(ctx, j.rawURL, dir)
+	}
 	if err != nil {
 		bot.cache.Abandon(key)
 		return nil, err

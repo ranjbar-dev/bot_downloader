@@ -30,10 +30,12 @@ func New(dir string, ttl time.Duration, maxBytes int64) *Cache {
 	return &Cache{dir: dir, ttl: ttl, maxBytes: maxBytes}
 }
 
-// Key derives a cache key from a raw URL. Same URL string -> same key;
-// differing query params/tracking junk are treated as distinct entries.
-func Key(rawURL string) string {
-	sum := sha256.Sum256([]byte(rawURL))
+// Key derives a cache key from a raw URL and the requested quality (empty
+// for providers with no quality choice). Same pair -> same key; differing
+// query params/tracking junk, or a different quality pick, are distinct
+// entries.
+func Key(rawURL, quality string) string {
+	sum := sha256.Sum256([]byte(rawURL + "|" + quality))
 	return hex.EncodeToString(sum[:])
 }
 

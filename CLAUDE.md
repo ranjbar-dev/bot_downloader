@@ -10,7 +10,7 @@ When job done (build/vet/tests pass), commit changes into git.
 
 ## What this is
 
-igsave-bot: self-hosted Telegram bot (Go, single static binary). User sends an Instagram link, bot shells out to `yt-dlp`, sends media back. Gated by Telegram channel membership; disk-cached (TTL + size cap) so repeat links across all users are served without re-downloading. Deployed via systemd on a small VPS (1 CPU/1GB RAM/30GB disk is the tuned-for profile).
+igsave-bot: self-hosted Telegram bot (Go, single static binary). User sends a link (Instagram, TikTok, YouTube, Pornhub, Spotify), bot shells out to `yt-dlp` (or, for Spotify, resolves the track then downloads matching audio from YouTube via `yt-dlp`), sends media back. YouTube/Pornhub prompt for a quality before downloading. Gated by Telegram channel membership; disk-cached (TTL + size cap, keyed on URL+quality) so repeat requests across all users are served without re-downloading. Deployed via systemd on a small VPS (1 CPU/1GB RAM/30GB disk is the tuned-for profile).
 
 Full design spec: `docs/index.md` (routes to per-topic docs split out of the old `SPEC.md`). Deployment/ops runbook: `README.md`. Read both before changing gate, cache, or config behavior — they're the source of truth, not just docs.
 
@@ -37,17 +37,17 @@ type Provider interface {
 }
 ```
 
-`internal/bot` (the Telegram update loop/handlers) and `internal/cache` (disk cache) only ever talk to `Provider` / `MediaFile` — they are provider-agnostic. "Instagram" as a string appears exactly once in the codebase: the registration call in `cmd/igsave-bot/main.go`. Adding a yt-dlp-backed platform (YouTube, TikTok, Twitter/X — anything yt-dlp already extracts) is one `platform.NewYtDlpProvider(name, hosts, ...)` registration line, nothing else. A platform yt-dlp can't reach (e.g. Spotify) needs a new `Provider` implementation (`internal/platform/spotify.go`-shaped), registered the same way — still zero changes to `internal/bot` or `internal/cache`. See `docs/extending-platforms.md` for the full walkthrough.
+`internal/bot` (the Telegram update loop/handlers) and `internal/cache` (disk cache) only ever talk to `Provider` / `MediaFile` — they are provider-agnostic. Providers registered today (`cmd/igsave-bot/main.go`): Instagram, TikTok, YouTube, Pornhub, Spotify. Adding a yt-dlp-backed platform (Twitter/X, Reddit — anything yt-dlp already extracts) is one `platform.NewYtDlpProvider(name, hosts, ...)` registration line, nothing else. A platform yt-dlp can't reach directly (e.g. Spotify, DRM'd) needs a new `Provider` implementation (`internal/platform/spotify.go`-shaped), registered the same way — still zero changes to `internal/bot` or `internal/cache`. Providers that offer more than one download option (YouTube, Pornhub) also implement `platform.QualityProvider` (`Qualities()`/`DownloadWithQuality`, see `internal/platform/ytdlp.go`); `internal/bot` type-asserts for it and shows an inline quality-picker before enqueuing. See `docs/extending-platforms.md` for the full walkthrough.
 
-Request flow (`docs/flow.md` has the full diagram): incoming message → extract/validate IG URL → gate check (channel membership) → per-user rate limit → cache lookup (`sha256(url)` key) → on miss, enqueue to bounded worker pool → `yt-dlp` shells out via `internal/platform/ytdlp.go` → cache marks entry done (`.done` marker file, its mtime is the TTL clock) → send via `sendVideo`/`sendPhoto`/`sendMediaGroup`.
+Request flow (`docs/flow.md` has the full diagram): incoming message → extract/validate URL → gate check (channel membership) → per-user rate limit → quality prompt if the matched provider is a `QualityProvider` (blocks on a button tap) → cache lookup (`sha256(url + "|" + quality)` key) → on miss, enqueue to bounded worker pool → `yt-dlp` shells out via `internal/platform/ytdlp.go` (or `internal/platform/spotify.go` for Spotify) → cache marks entry done (`.done` marker file, its mtime is the TTL clock) → send via `sendVideo`/`sendPhoto`/`sendMediaGroup`.
 
 Key invariants worth knowing before touching this code:
 - **No shell interpolation** of user input anywhere — `yt-dlp` is invoked via `exec.Command` with an argument slice, never a shell string. This is the one real injection surface (`docs/errors-security.md` §14); don't introduce `sh -c` or string-built commands.
 - **Gate membership is realtime, not polled** (`internal/bot/gate.go`, `internal/store/store.go`): a `chat_member` Telegram update fires on every join/leave/kick in the gate channel and is upserted into SQLite immediately (`bot.go`'s `handleChatMember`), so `gate.allowed` reads that table instead of calling `GetChatMember` per message. Leaving the channel takes effect on the user's very next message — no cache staleness window. `GetChatMember` is only called as a one-time bootstrap for a user ID the store has never seen an event for (e.g. they joined before the bot started listening), and that result is written back to the store so it isn't asked again.
 - **Cache eviction never races an in-flight request**: both TTL and size-cap eviction (`internal/cache/cache.go`) take the same per-key lock (`keyedLock`, reference-counted) that a download/send holds, so a sweep can't delete out from under an active request.
-- **Cache metadata is still filesystem-only** — `.done` marker mtimes under `CACHE_DIR/<sha256(url)>/`, no DB. SQLite is scoped to channel membership only (see below); don't route cache metadata through it.
+- **Cache metadata is still filesystem-only** — `.done` marker mtimes under `CACHE_DIR/<sha256(url+quality)>/`, no DB. SQLite is scoped to channel membership only (see below); don't route cache metadata through it.
 - Config (`internal/config/config.go`) is plain `os.Getenv` + small helpers — no config framework, no viper/env struct tags. Keep new env vars consistent with the existing `getEnvDefault`/`getEnvIntDefault` pattern.
-- **Every client-facing message (replies, errors, captions) leads with an emoji.** Match existing tone: 🔒 gate/join, ❌ errors, ⬇️/📥 download/send status, ✅ success, ⚠️ transient failure, 🚫 unsupported input.
+- **Every client-facing message (replies, errors, captions) leads with an emoji.** Match existing tone: 🔒 gate/join, ❌ errors, ⬇️/📥 download/send status, ✅ success, ⚠️ transient failure, 🚫 unsupported input, 🎚 quality prompt.
 
 ## SQLite (channel membership)
 
@@ -64,7 +64,7 @@ Key invariants worth knowing before touching this code:
 ```
 cmd/igsave-bot/                      main.go — wiring only, registers providers, opens the member store
 internal/bot/                        update loop, handlers, gate check (SQLite-backed), rate limit
-internal/platform/                   Provider interface, registry, yt-dlp-backed provider
+internal/platform/                   Provider/QualityProvider interfaces, registry, yt-dlp-backed provider, Spotify provider
 internal/cache/                      disk cache: TTL + size-cap eviction, per-key locking (filesystem, not SQLite)
 internal/store/                      SQLite-backed channel membership table, fed by chat_member events
 internal/config/                     env config loading
