@@ -29,6 +29,7 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             set -e
+            export PATH=$PATH:/usr/local/go/bin
             cd /opt/igsave-bot/src
             git pull --ff-only origin main
             go build -o /opt/igsave-bot/igsave-bot ./cmd/igsave-bot
