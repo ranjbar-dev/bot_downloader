@@ -101,6 +101,10 @@ func (p *YtDlpProvider) baseArgs(outTemplate, quality string) []string {
 		"--output", outTemplate,
 		"--no-warnings",
 		"--print", "after_move:filepath",
+		// ponytail: YouTube's web player now serves SABR-only formats that
+		// 403 on direct download (yt-dlp/yt-dlp#16729); tv/android clients
+		// still get progressive URLs. Harmless no-op on other yt-dlp hosts.
+		"--extractor-args", "youtube:player_client=tv,android",
 	}
 	if p.maxSizeMB > 0 {
 		args = append(args, "--max-filesize", fmt.Sprintf("%dM", p.maxSizeMB))
