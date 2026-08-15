@@ -44,11 +44,12 @@ type Bot struct {
 }
 
 type job struct {
-	b        *gotgbot.Bot
-	chatID   int64
-	userID   int64
-	rawURL   string
-	provider platform.Provider
+	b           *gotgbot.Bot
+	chatID      int64
+	userID      int64
+	rawURL      string
+	provider    platform.Provider
+	statusMsgID int64
 }
 
 func New(cfg *config.Config, registry *platform.Registry, members *store.Store) *Bot {
@@ -170,17 +171,26 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 		return replyErr
 	}
 
-	_, replyErr := msg.Reply(b, bot.enqueue(j), nil)
-	return replyErr
+	return bot.enqueue(b, j)
 }
 
-// enqueue submits j to the worker pool, returning the client-facing status message.
-func (bot *Bot) enqueue(j job) string {
+// enqueue sends the "Downloading..." status message, then submits j to the
+// worker pool with that message's ID attached so process() can delete it
+// once the content is sent. If the pool is full, the status message is
+// edited to a busy notice instead and the job is dropped.
+func (bot *Bot) enqueue(b *gotgbot.Bot, j job) error {
+	status, err := b.SendMessage(j.chatID, "⬇️ Downloading...", nil)
+	if err != nil {
+		return err
+	}
+	j.statusMsgID = status.MessageId
+
 	select {
 	case bot.jobs <- j:
-		return "⬇️ Downloading..."
+		return nil
 	default:
-		return "🚦 Bot's busy, try again in a moment."
+		_, _, err := status.EditText(b, "🚦 Bot's busy, try again in a moment.", nil)
+		return err
 	}
 }
 
@@ -223,9 +233,8 @@ func (bot *Bot) handleCheckJoin(b *gotgbot.Bot, ctx *ext.Context) error {
 		return nil
 	}
 
-	status := bot.enqueue(j)
-	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ Joined! " + status})
-	_, err = b.SendMessage(j.chatID, status, nil)
+	err = bot.enqueue(b, j)
+	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ Joined!"})
 	return err
 }
 
@@ -254,6 +263,11 @@ func (bot *Bot) process(j job) {
 	if err := bot.sendFiles(j, files); err != nil {
 		log.Println("send failed:", err)
 		bot.sendError(j, "❌ Downloaded it, but couldn't send it back — try again later.")
+		return
+	}
+
+	if _, err := j.b.DeleteMessage(j.chatID, j.statusMsgID, nil); err != nil {
+		log.Println("delete status message failed:", err)
 	}
 }
 
