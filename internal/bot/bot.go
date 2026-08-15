@@ -422,9 +422,11 @@ func (bot *Bot) mediaInput(path string) (gotgbot.InputFileOrString, func(), erro
 		if err != nil {
 			return nil, nil, err
 		}
-		// InputFileByID passes the string through as the raw field value, which
-		// is exactly what a --local server expects for a filesystem path.
-		return gotgbot.InputFileByID(abs), func() {}, nil
+		// Must be a file:// URI, not a bare path: a bare "/var/lib/..." falls
+		// through to the server's URL parser and is rejected with "invalid file
+		// HTTP URL specified: URL host is empty". InputFileByID passes the
+		// string through as the raw field value.
+		return gotgbot.InputFileByID("file://" + filepath.ToSlash(abs)), func() {}, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {

@@ -19,7 +19,7 @@ Source: SPEC.md §8-9.
 Set `TELEGRAM_BOT_API_URL` (e.g. `http://127.0.0.1:8081`) and the ceiling becomes **2000 MB**. Setup runbook: README → "Local Bot API server". Two things change in the bot when that var is non-empty (`internal/bot/bot.go`):
 
 1. **API base URL.** `gotgbot.NewBot` gets a `BaseBotClient` with `RequestOpts.APIURL` pointing at the local server, and a 15-minute request timeout — the default 5s covers a 50MB multipart upload, not a 2GB transfer that the local server is still pushing to Telegram while our POST hangs open.
-2. **Files are handed over by path, not uploaded.** `mediaInput` returns the absolute path as the field value (what a `--local` server expects) instead of opening the file and streaming it as multipart. Nothing buffers the media in the bot's memory, which is the whole point on a small VPS — a 2GB send costs the bot process roughly nothing.
+2. **Files are handed over by path, not uploaded.** `mediaInput` returns a `file://` URI as the field value instead of opening the file and streaming it as multipart. The URI scheme is required: a bare absolute path reaches the server's URL parser and comes back as `Bad Request: invalid file HTTP URL specified: URL host is empty`. Nothing buffers the media in the bot's memory, which is the whole point on a small VPS — a 2GB send costs the bot process roughly nothing.
 
 Consequences worth knowing:
 

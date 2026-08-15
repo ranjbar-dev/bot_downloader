@@ -28,9 +28,11 @@ func TestMediaInputLocalSendsPathPublicSendsContents(t *testing.T) {
 	}
 	cleanup()
 	// The field value is what goes on the wire; marshalling is how gotgbot gets it there.
+	// A bare path here gets parsed as a URL by the server and rejected.
 	got := marshalValue(t, input)
-	if got != path {
-		t.Errorf("local server: want absolute path %q on the wire, got %q", path, got)
+	want := "file://" + filepath.ToSlash(path)
+	if got != want {
+		t.Errorf("local server: want file URI %q on the wire, got %q", want, got)
 	}
 
 	public := &Bot{cfg: &config.Config{}}
