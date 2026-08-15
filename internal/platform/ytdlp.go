@@ -176,10 +176,20 @@ func (p *YtDlpProvider) probeQualities(ctx context.Context, rawURL string) ([]Qu
 	var bestAudioSize int64
 	var bestAudioKbps float64
 	byHeight := map[int]int64{}
+	seenHeights := map[int]bool{}
 	maxHeight := 0
 	for _, f := range info.Formats {
 		hasVideo := f.VCodec != "" && f.VCodec != "none"
 		hasAudio := f.ACodec != "" && f.ACodec != "none"
+		// ponytail: the generic/html5 extractor (e.g. wow.xxx) never reports
+		// codecs, but a format with a height there is still a real combined
+		// video+audio stream, not a codec-less nothing. Without this, every
+		// format on such a site is invisible to the ladder below, it falls
+		// back to the generic static quality list, and picking a resolution
+		// that site doesn't actually have hard-fails the download.
+		if f.VCodec == "" && f.ACodec == "" && f.Height > 0 {
+			hasVideo, hasAudio = true, true
+		}
 		if hasAudio && !hasVideo {
 			if s := f.size(); s > bestAudioSize {
 				bestAudioSize = s
@@ -189,6 +199,11 @@ func (p *YtDlpProvider) probeQualities(ctx context.Context, rawURL string) ([]Qu
 			}
 		}
 		if hasVideo && f.Height > 0 {
+			// ponytail: same generic-extractor sites also omit filesize, so
+			// presence has to be tracked separately from "biggest size seen" —
+			// otherwise a format whose size is unknown (0) never earns a map
+			// entry and silently vanishes from the ladder below.
+			seenHeights[f.Height] = true
 			if s := f.size(); s > byHeight[f.Height] {
 				byHeight[f.Height] = s
 			}
@@ -205,10 +220,10 @@ func (p *YtDlpProvider) probeQualities(ctx context.Context, rawURL string) ([]Qu
 		{Label: sizedLabel("🎬 Best", byHeight[maxHeight]+bestAudioSize), Value: ""},
 	}
 	for _, h := range qualityHeights {
-		size, ok := byHeight[h]
-		if !ok || h == maxHeight {
+		if !seenHeights[h] || h == maxHeight {
 			continue
 		}
+		size := byHeight[h]
 		qualities = append(qualities, Quality{
 			Label: sizedLabel(fmt.Sprintf("%dp", h), size+bestAudioSize),
 			Value: fmt.Sprintf("-f bv*[height<=%d]+ba/b[height<=%d]", h, h),
