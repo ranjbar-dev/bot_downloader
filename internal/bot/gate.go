@@ -14,14 +14,9 @@ type gate struct {
 	inviteLink   string
 	ttl          time.Duration
 	mu           sync.Mutex
-	cache        map[int64]cacheEntry
+	allowedUntil map[int64]time.Time // only positive results are cached
 	lastNotified map[int64]time.Time
 	notifyCool   time.Duration
-}
-
-type cacheEntry struct {
-	allowed   bool
-	expiresAt time.Time
 }
 
 func newGate(channel int64, inviteLink string) *gate {
@@ -29,7 +24,7 @@ func newGate(channel int64, inviteLink string) *gate {
 		channel:      channel,
 		inviteLink:   inviteLink,
 		ttl:          5 * time.Minute,
-		cache:        make(map[int64]cacheEntry),
+		allowedUntil: make(map[int64]time.Time),
 		lastNotified: make(map[int64]time.Time),
 		notifyCool:   time.Minute,
 	}
@@ -37,9 +32,11 @@ func newGate(channel int64, inviteLink string) *gate {
 
 func (g *gate) allowed(b *gotgbot.Bot, userID int64) (bool, error) {
 	g.mu.Lock()
-	if e, ok := g.cache[userID]; ok && time.Now().Before(e.expiresAt) {
+	// Never cache "not a member" - that would keep rejecting a user for up
+	// to g.ttl after they actually join. Only a cached "allowed" is trusted.
+	if until, ok := g.allowedUntil[userID]; ok && time.Now().Before(until) {
 		g.mu.Unlock()
-		return e.allowed, nil
+		return true, nil
 	}
 	g.mu.Unlock()
 
@@ -50,9 +47,11 @@ func (g *gate) allowed(b *gotgbot.Bot, userID int64) (bool, error) {
 	status := member.GetStatus()
 	ok := status == "member" || status == "administrator" || status == "creator"
 
-	g.mu.Lock()
-	g.cache[userID] = cacheEntry{allowed: ok, expiresAt: time.Now().Add(g.ttl)}
-	g.mu.Unlock()
+	if ok {
+		g.mu.Lock()
+		g.allowedUntil[userID] = time.Now().Add(g.ttl)
+		g.mu.Unlock()
+	}
 	return ok, nil
 }
 

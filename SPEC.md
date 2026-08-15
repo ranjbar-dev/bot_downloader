@@ -82,7 +82,7 @@ User (in Telegram) --> sends message containing instagram.com link
 - On every incoming message with a valid link, call `getChatMember(chat_id=GATE_CHANNEL, user_id=sender.id)`.
 - Allowed statuses: `member`, `administrator`, `creator`. Anything else (`left`, `kicked`, `restricted`) is rejected.
 - Bot must itself be a member/admin of `GATE_CHANNEL` for this API call to succeed.
-- Membership is cached per user for 5 minutes (in-memory map) to avoid hammering `getChatMember` on repeated messages from the same active user.
+- A **positive** membership result is cached per user for 5 minutes (in-memory map) to avoid hammering `getChatMember` on repeated messages from an active member. A negative result (not yet a member) is never cached — it's always re-checked live, so joining the channel takes effect on the very next message instead of waiting out a stale cache entry.
 - **Rejection reply**: text "You need to join our channel to use this bot." with one inline keyboard button:
   ```go
   gotgbot.InlineKeyboardMarkup{

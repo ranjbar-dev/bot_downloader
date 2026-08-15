@@ -10,11 +10,13 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/callbackquery"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/message"
 
 	"igsave-bot/internal/cache"
@@ -24,13 +26,19 @@ import (
 
 var urlRe = regexp.MustCompile(`https?://\S+`)
 
+const checkJoinCallback = "check_join"
+
 type Bot struct {
-	cfg      *config.Config
-	registry *platform.Registry
-	gate     *gate
-	limiter  *rateLimiter
-	cache    *cache.Cache
-	jobs     chan job
+	cfg         *config.Config
+	registry    *platform.Registry
+	gate        *gate
+	limiter     *rateLimiter
+	cache       *cache.Cache
+	jobs        chan job
+	botUsername string
+
+	pendingMu sync.Mutex
+	pending   map[int64]job // last blocked request per user, retried from the "I joined" button
 }
 
 type job struct {
@@ -49,6 +57,7 @@ func New(cfg *config.Config, registry *platform.Registry) *Bot {
 		limiter:  newRateLimiter(5, 10*time.Minute),
 		cache:    cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
 		jobs:     make(chan job, 50),
+		pending:  make(map[int64]job),
 	}
 }
 
@@ -71,6 +80,7 @@ func (bot *Bot) Run() error {
 	})
 	dispatcher.AddHandler(handlers.NewCommand("start", bot.handleStart))
 	dispatcher.AddHandler(handlers.NewMessage(message.Text, bot.handleMessage))
+	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Equal(checkJoinCallback), bot.handleCheckJoin))
 
 	updater := ext.NewUpdater(dispatcher, nil)
 	if err := updater.StartPolling(b, &ext.PollingOpts{
@@ -78,6 +88,7 @@ func (bot *Bot) Run() error {
 	}); err != nil {
 		return fmt.Errorf("start polling: %w", err)
 	}
+	bot.botUsername = b.User.Username
 	log.Println("igsave-bot running as", b.User.Username)
 	updater.Idle()
 	return nil
@@ -85,16 +96,18 @@ func (bot *Bot) Run() error {
 
 func (bot *Bot) handleStart(b *gotgbot.Bot, ctx *ext.Context) error {
 	_, err := ctx.EffectiveMessage.Reply(b,
-		"Send an Instagram link to download it. You need to be a member of our channel to use this bot.",
+		"👋 Send an Instagram link to download it. You need to be a member of our channel to use this bot.",
 		&gotgbot.SendMessageOpts{ReplyMarkup: bot.joinKeyboard()})
 	return err
 }
 
-// joinKeyboard is the inline button attached to the "please join" reply.
+// joinKeyboard is the inline keyboard attached to the "please join" reply:
+// a link to the channel plus a callback button to re-check membership.
 func (bot *Bot) joinKeyboard() gotgbot.InlineKeyboardMarkup {
 	return gotgbot.InlineKeyboardMarkup{
 		InlineKeyboard: [][]gotgbot.InlineKeyboardButton{
-			{{Text: "Join Channel", Url: bot.cfg.GateInviteLink}},
+			{{Text: "📢 Join Channel", Url: bot.cfg.GateInviteLink}},
+			{{Text: "✅ I joined the channel", CallbackData: checkJoinCallback}},
 		},
 	}
 }
@@ -110,19 +123,22 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 
 	provider, err := bot.registry.Find(rawURL)
 	if err != nil {
-		_, replyErr := msg.Reply(b, "That link isn't supported.", nil)
+		_, replyErr := msg.Reply(b, "🚫 That link isn't supported.", nil)
 		return replyErr
 	}
+
+	j := job{b: b, chatID: ctx.EffectiveChat.Id, userID: userID, rawURL: rawURL, provider: provider}
 
 	allowed, err := bot.gate.allowed(b, userID)
 	if err != nil {
 		log.Println("gate check failed:", err)
-		_, replyErr := msg.Reply(b, "Couldn't verify membership, try again shortly.", nil)
+		_, replyErr := msg.Reply(b, "⚠️ Couldn't verify membership, try again shortly.", nil)
 		return replyErr
 	}
 	if !allowed {
+		bot.setPending(userID, j)
 		if bot.gate.shouldNotify(userID) {
-			_, replyErr := msg.Reply(b, "You need to join our channel to use this bot.",
+			_, replyErr := msg.Reply(b, "🔒 You need to join our channel to use this bot.",
 				&gotgbot.SendMessageOpts{ReplyMarkup: bot.joinKeyboard()})
 			return replyErr
 		}
@@ -130,18 +146,67 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 	}
 
 	if !bot.limiter.allow(userID) {
-		_, replyErr := msg.Reply(b, "Too many requests, slow down.", nil)
+		_, replyErr := msg.Reply(b, "⏳ Too many requests, slow down.", nil)
 		return replyErr
 	}
 
+	_, replyErr := msg.Reply(b, bot.enqueue(j), nil)
+	return replyErr
+}
+
+// enqueue submits j to the worker pool, returning the client-facing status message.
+func (bot *Bot) enqueue(j job) string {
 	select {
-	case bot.jobs <- job{b: b, chatID: ctx.EffectiveChat.Id, userID: userID, rawURL: rawURL, provider: provider}:
-		_, err := msg.Reply(b, "Downloading...", nil)
-		return err
+	case bot.jobs <- j:
+		return "⬇️ Downloading..."
 	default:
-		_, err := msg.Reply(b, "Bot's busy, try again in a moment.", nil)
-		return err
+		return "🚦 Bot's busy, try again in a moment."
 	}
+}
+
+func (bot *Bot) setPending(userID int64, j job) {
+	bot.pendingMu.Lock()
+	bot.pending[userID] = j
+	bot.pendingMu.Unlock()
+}
+
+func (bot *Bot) takePending(userID int64) (job, bool) {
+	bot.pendingMu.Lock()
+	defer bot.pendingMu.Unlock()
+	j, ok := bot.pending[userID]
+	if ok {
+		delete(bot.pending, userID)
+	}
+	return j, ok
+}
+
+// handleCheckJoin responds to the "I joined the channel" button: re-checks
+// membership and, if it now passes, runs the request that triggered the gate.
+func (bot *Bot) handleCheckJoin(b *gotgbot.Bot, ctx *ext.Context) error {
+	cq := ctx.CallbackQuery
+	userID := ctx.EffectiveUser.Id
+
+	allowed, err := bot.gate.allowed(b, userID)
+	if err != nil {
+		log.Println("gate check failed:", err)
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "⚠️ Couldn't verify membership, try again shortly.", ShowAlert: true})
+		return nil
+	}
+	if !allowed {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "❌ You haven't joined the channel yet.", ShowAlert: true})
+		return nil
+	}
+
+	j, ok := bot.takePending(userID)
+	if !ok {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ You're in! Send a link to get started.", ShowAlert: true})
+		return nil
+	}
+
+	status := bot.enqueue(j)
+	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ Joined! " + status})
+	_, err = b.SendMessage(j.chatID, status, nil)
+	return err
 }
 
 func (bot *Bot) worker() {
@@ -161,14 +226,14 @@ func (bot *Bot) process(j job) {
 		files, err = bot.download(j, key)
 		if err != nil {
 			log.Printf("download failed [%s]: %v", j.provider.Name(), err)
-			bot.sendError(j, "Couldn't download that — post may be private, removed, or too large.")
+			bot.sendError(j, "❌ Couldn't download that — post may be private, removed, or too large.")
 			return
 		}
 	}
 
 	if err := bot.sendFiles(j, files); err != nil {
 		log.Println("send failed:", err)
-		bot.sendError(j, "Downloaded it, but couldn't send it back — try again later.")
+		bot.sendError(j, "❌ Downloaded it, but couldn't send it back — try again later.")
 	}
 }
 
@@ -207,6 +272,15 @@ func (bot *Bot) sendFiles(j job, files []platform.MediaFile) error {
 	return bot.sendGroup(j, files)
 }
 
+// caption builds the client-facing caption attached to sent content: which
+// bot served it and the original link it came from.
+func (bot *Bot) caption(j job) string {
+	if bot.botUsername == "" {
+		return fmt.Sprintf("🔗 %s", j.rawURL)
+	}
+	return fmt.Sprintf("📥 via @%s\n🔗 %s", bot.botUsername, j.rawURL)
+}
+
 func (bot *Bot) sendSingle(j job, f platform.MediaFile) error {
 	file, err := os.Open(f.Path)
 	if err != nil {
@@ -215,26 +289,28 @@ func (bot *Bot) sendSingle(j job, f platform.MediaFile) error {
 	defer file.Close()
 
 	input := gotgbot.InputFileByReader(fileBase(f.Path), file)
+	caption := bot.caption(j)
 	switch f.Kind {
 	case platform.KindPhoto:
-		_, err = j.b.SendPhoto(j.chatID, input, nil)
+		_, err = j.b.SendPhoto(j.chatID, input, &gotgbot.SendPhotoOpts{Caption: caption})
 	case platform.KindAudio:
-		_, err = j.b.SendAudio(j.chatID, input, nil)
+		_, err = j.b.SendAudio(j.chatID, input, &gotgbot.SendAudioOpts{Caption: caption})
 	default:
-		_, err = j.b.SendVideo(j.chatID, input, nil)
+		_, err = j.b.SendVideo(j.chatID, input, &gotgbot.SendVideoOpts{Caption: caption})
 	}
 	return err
 }
 
 func (bot *Bot) sendGroup(j job, files []platform.MediaFile) error {
 	const chunkSize = 10
+	caption := bot.caption(j)
 	for i := 0; i < len(files); i += chunkSize {
 		end := min(i+chunkSize, len(files))
 		chunk := files[i:end]
 
 		media := make([]gotgbot.InputMedia, 0, len(chunk))
 		openFiles := make([]*os.File, 0, len(chunk))
-		for _, f := range chunk {
+		for idx, f := range chunk {
 			file, err := os.Open(f.Path)
 			if err != nil {
 				closeAll(openFiles)
@@ -242,10 +318,16 @@ func (bot *Bot) sendGroup(j job, files []platform.MediaFile) error {
 			}
 			openFiles = append(openFiles, file)
 			input := gotgbot.InputFileByReader(fileBase(f.Path), file)
+
+			// Telegram renders only the first item's caption as the album caption.
+			itemCaption := ""
+			if i == 0 && idx == 0 {
+				itemCaption = caption
+			}
 			if f.Kind == platform.KindPhoto {
-				media = append(media, gotgbot.InputMediaPhoto{Media: input})
+				media = append(media, gotgbot.InputMediaPhoto{Media: input, Caption: itemCaption})
 			} else {
-				media = append(media, gotgbot.InputMediaVideo{Media: input})
+				media = append(media, gotgbot.InputMediaVideo{Media: input, Caption: itemCaption})
 			}
 		}
 

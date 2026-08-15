@@ -56,7 +56,7 @@ These steps assume a fresh Ubuntu/Debian VPS and that you'll build the binary on
 
 ```bash
 sudo apt update
-sudo apt install -y ffmpeg python3-pip git
+sudo apt install -y ffmpeg git
 
 # Debian/Ubuntu's packaged Go is usually older than the 1.24 this module
 # requires — install from the official tarball instead of apt's golang-go.
@@ -65,10 +65,14 @@ echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/go.sh
 source /etc/profile.d/go.sh
 go version   # sanity check, should print go1.24+
 
-# yt-dlp via pip, NOT apt/choco-style package managers — those go stale and
-# break against Instagram's frequently-changing site. `-U` self-update
-# (wired into the systemd timer below) needs a pip or standalone install.
-sudo pip3 install -U yt-dlp
+# yt-dlp as the standalone self-updating binary, NOT apt/choco/pip — apt
+# and choco versions go stale and break against Instagram's frequently
+# changing site, and Debian 12+/Ubuntu 23.10+ block system-wide pip installs
+# (PEP 668 "externally-managed-environment") without extra venv/pipx setup
+# this doesn't need. `yt-dlp -U` (wired into the systemd timer below) self-
+# updates this binary in place.
+sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+sudo chmod +x /usr/local/bin/yt-dlp
 yt-dlp --version   # sanity check
 ```
 
