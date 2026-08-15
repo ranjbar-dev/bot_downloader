@@ -2,7 +2,7 @@
 
 Telegram bot, self-hosted on your VPS. Send it an Instagram link (reel, video, photo/carousel, IGTV, or best-effort story), it downloads the media and sends it back to you in Telegram.
 
-Full design/spec: [SPEC.md](SPEC.md)
+Full design/spec: [docs/index.md](docs/index.md)
 
 ## How it works (user's-eye view)
 
@@ -21,8 +21,8 @@ Full design/spec: [SPEC.md](SPEC.md)
 - Access gate: Telegram channel membership, enforced with an inline "Join Channel" button
 - Cache: on-disk, TTL-based, shared across all users
 - Deployment: systemd service on a Linux VPS
-- Scope: public Instagram content only (no IG login/session) — see [SPEC.md §10](SPEC.md#10-known-limitations) for what that excludes (most Stories, private accounts)
-- Designed to add more platforms later (YouTube, TikTok, Spotify, ...) without touching the bot's core — see [SPEC.md §16](SPEC.md#16-adding-a-new-platform)
+- Scope: public Instagram content only (no IG login/session) — see [docs/limitations.md](docs/limitations.md) for what that excludes (most Stories, private accounts)
+- Designed to add more platforms later (YouTube, TikTok, Spotify, ...) without touching the bot's core — see [docs/extending-platforms.md](docs/extending-platforms.md)
 
 ## Requirements on the VPS
 
@@ -100,7 +100,7 @@ sudo cp config.example.env /opt/igsave-bot/config.env
 sudo nano /opt/igsave-bot/config.env
 ```
 
-Fill in at minimum `BOT_TOKEN`, `GATE_CHANNEL` (numeric, see above), `GATE_CHANNEL_INVITE_LINK`. Defaults are sane for a small VPS out of the box (1 hour cache TTL, 10GB cache cap, 2 workers, 50MB upload cap — see [SPEC.md §11](SPEC.md#11-configuration) for the full list and what each one does). If your box is smaller than that, see "Sizing for a small VPS" below before you start the service.
+Fill in at minimum `BOT_TOKEN`, `GATE_CHANNEL` (numeric, see above), `GATE_CHANNEL_INVITE_LINK`. Defaults are sane for a small VPS out of the box (1 hour cache TTL, 10GB cache cap, 2 workers, 50MB upload cap — see [docs/config.md](docs/config.md) for the full list and what each one does). If your box is smaller than that, see "Sizing for a small VPS" below before you start the service.
 
 ```bash
 sudo chown igsave-bot:igsave-bot /opt/igsave-bot/config.env
@@ -170,9 +170,9 @@ internal/config/                     env config loading
 config.example.env
 igsave-bot.service                   main systemd unit
 igsave-bot-ytdlp-update.service/.timer   weekly yt-dlp self-update
-SPEC.md                              full design + multi-platform extension guide
+docs/                                 full design spec, split by topic — start at docs/index.md
 ```
 
 ## Adding a new platform later
 
-See [SPEC.md §16](SPEC.md#16-adding-a-new-platform) — YouTube, TikTok, Twitter/X are a one-line addition since they already work through yt-dlp; sites yt-dlp can't reach (Spotify) need a small new `Provider` implementation. Neither case touches `internal/bot` or `internal/cache`.
+See [docs/extending-platforms.md](docs/extending-platforms.md) — YouTube, TikTok, Twitter/X are a one-line addition since they already work through yt-dlp; sites yt-dlp can't reach (Spotify) need a small new `Provider` implementation. Neither case touches `internal/bot` or `internal/cache`.

@@ -12,7 +12,7 @@ When job done (build/vet/tests pass), commit changes into git.
 
 igsave-bot: self-hosted Telegram bot (Go, single static binary). User sends an Instagram link, bot shells out to `yt-dlp`, sends media back. Gated by Telegram channel membership; disk-cached (TTL + size cap) so repeat links across all users are served without re-downloading. Deployed via systemd on a small VPS (1 CPU/1GB RAM/30GB disk is the tuned-for profile).
 
-Full design spec: `SPEC.md`. Deployment/ops runbook: `README.md`. Read both before changing gate, cache, or config behavior — they're the source of truth, not just docs.
+Full design spec: `docs/index.md` (routes to per-topic docs split out of the old `SPEC.md`). Deployment/ops runbook: `README.md`. Read both before changing gate, cache, or config behavior — they're the source of truth, not just docs.
 
 ## Commands
 
@@ -37,12 +37,12 @@ type Provider interface {
 }
 ```
 
-`internal/bot` (the Telegram update loop/handlers) and `internal/cache` (disk cache) only ever talk to `Provider` / `MediaFile` — they are provider-agnostic. "Instagram" as a string appears exactly once in the codebase: the registration call in `cmd/igsave-bot/main.go`. Adding a yt-dlp-backed platform (YouTube, TikTok, Twitter/X — anything yt-dlp already extracts) is one `platform.NewYtDlpProvider(name, hosts, ...)` registration line, nothing else. A platform yt-dlp can't reach (e.g. Spotify) needs a new `Provider` implementation (`internal/platform/spotify.go`-shaped), registered the same way — still zero changes to `internal/bot` or `internal/cache`. See SPEC.md §16 for the full walkthrough.
+`internal/bot` (the Telegram update loop/handlers) and `internal/cache` (disk cache) only ever talk to `Provider` / `MediaFile` — they are provider-agnostic. "Instagram" as a string appears exactly once in the codebase: the registration call in `cmd/igsave-bot/main.go`. Adding a yt-dlp-backed platform (YouTube, TikTok, Twitter/X — anything yt-dlp already extracts) is one `platform.NewYtDlpProvider(name, hosts, ...)` registration line, nothing else. A platform yt-dlp can't reach (e.g. Spotify) needs a new `Provider` implementation (`internal/platform/spotify.go`-shaped), registered the same way — still zero changes to `internal/bot` or `internal/cache`. See `docs/extending-platforms.md` for the full walkthrough.
 
-Request flow (SPEC.md §3 has the full diagram): incoming message → extract/validate IG URL → gate check (channel membership) → per-user rate limit → cache lookup (`sha256(url)` key) → on miss, enqueue to bounded worker pool → `yt-dlp` shells out via `internal/platform/ytdlp.go` → cache marks entry done (`.done` marker file, its mtime is the TTL clock) → send via `sendVideo`/`sendPhoto`/`sendMediaGroup`.
+Request flow (`docs/flow.md` has the full diagram): incoming message → extract/validate IG URL → gate check (channel membership) → per-user rate limit → cache lookup (`sha256(url)` key) → on miss, enqueue to bounded worker pool → `yt-dlp` shells out via `internal/platform/ytdlp.go` → cache marks entry done (`.done` marker file, its mtime is the TTL clock) → send via `sendVideo`/`sendPhoto`/`sendMediaGroup`.
 
 Key invariants worth knowing before touching this code:
-- **No shell interpolation** of user input anywhere — `yt-dlp` is invoked via `exec.Command` with an argument slice, never a shell string. This is the one real injection surface (SPEC.md §14); don't introduce `sh -c` or string-built commands.
+- **No shell interpolation** of user input anywhere — `yt-dlp` is invoked via `exec.Command` with an argument slice, never a shell string. This is the one real injection surface (`docs/errors-security.md` §14); don't introduce `sh -c` or string-built commands.
 - **Gate membership is realtime, not polled** (`internal/bot/gate.go`, `internal/store/store.go`): a `chat_member` Telegram update fires on every join/leave/kick in the gate channel and is upserted into SQLite immediately (`bot.go`'s `handleChatMember`), so `gate.allowed` reads that table instead of calling `GetChatMember` per message. Leaving the channel takes effect on the user's very next message — no cache staleness window. `GetChatMember` is only called as a one-time bootstrap for a user ID the store has never seen an event for (e.g. they joined before the bot started listening), and that result is written back to the store so it isn't asked again.
 - **Cache eviction never races an in-flight request**: both TTL and size-cap eviction (`internal/cache/cache.go`) take the same per-key lock (`keyedLock`, reference-counted) that a download/send holds, so a sweep can't delete out from under an active request.
 - **Cache metadata is still filesystem-only** — `.done` marker mtimes under `CACHE_DIR/<sha256(url)>/`, no DB. SQLite is scoped to channel membership only (see below); don't route cache metadata through it.
