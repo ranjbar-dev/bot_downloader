@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -59,6 +60,7 @@ type QualityProvider interface {
 type YtDlpProvider struct {
 	name      string
 	hosts     map[string]bool
+	hostGlobs []string // host entries containing "*", matched with path.Match
 	binPath   string
 	maxSizeMB int
 	qualities []Quality // nil = no quality prompt, always download best
@@ -77,19 +79,38 @@ func NewYtDlpProviderWithQuality(name string, hosts []string, binPath string, ma
 
 func newYtDlpProvider(name string, hosts []string, binPath string, maxSizeMB int, qualities []Quality) *YtDlpProvider {
 	h := make(map[string]bool, len(hosts))
+	var globs []string
 	for _, host := range hosts {
-		h[strings.ToLower(host)] = true
+		host = strings.ToLower(host)
+		if strings.Contains(host, "*") {
+			globs = append(globs, host)
+			continue
+		}
+		h[host] = true
 	}
 	if binPath == "" {
 		binPath = "yt-dlp"
 	}
-	return &YtDlpProvider{name: name, hosts: h, binPath: binPath, maxSizeMB: maxSizeMB, qualities: qualities}
+	return &YtDlpProvider{name: name, hosts: h, hostGlobs: globs, binPath: binPath, maxSizeMB: maxSizeMB, qualities: qualities}
 }
 
 func (p *YtDlpProvider) Name() string { return p.name }
 
 func (p *YtDlpProvider) Match(u *url.URL) bool {
-	return p.hosts[strings.ToLower(u.Hostname())]
+	host := strings.ToLower(u.Hostname())
+	if p.hosts[host] {
+		return true
+	}
+	// ponytail: xhamster rotates mirror domains (xhamster.com, xhamster46.desi,
+	// ge.xhamster46.desi, ...) faster than a fixed host list can track, so a
+	// host entry may be a glob. path.Match's separator is "/", so "*" spans
+	// dots and one "*xhamster*" covers the whole family.
+	for _, glob := range p.hostGlobs {
+		if ok, _ := path.Match(glob, host); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Qualities returns nil if this provider has no quality ladder configured.
@@ -264,7 +285,10 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 	// yt-dlp errors instead of just grabbing the images (yt-dlp/yt-dlp#17077).
 	// Retry asking for thumbnails only; yt-dlp still exits non-zero here even
 	// on success, so fall back to checking destDir for what actually landed.
-	if err != nil && strings.Contains(string(out), "No video formats found") {
+	// Instagram-only: on a video site the same error means extraction broke,
+	// and the fallback would hand the user a poster image as if it were the
+	// video — better to surface the failure.
+	if err != nil && p.name == "instagram" && strings.Contains(string(out), "No video formats found") {
 		retryArgs := append(p.baseArgs(outTemplate, quality),
 			"--write-thumbnail", "--skip-download", "--ignore-no-formats-error", rawURL)
 		retryCmd := exec.CommandContext(ctx, p.binPath, retryArgs...)

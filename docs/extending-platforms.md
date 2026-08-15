@@ -9,7 +9,7 @@ Source: SPEC.md §15-16.
 
 ## 16. Adding a new platform
 
-The bot is source-agnostic by design: `internal/bot` only ever talks to `platform.Provider` / `platform.QualityProvider` and `platform.MediaFile` (and, for persistence, `internal/cache`, which is likewise provider-agnostic — it just caches whatever files a `Provider.Download` produced). Registered platforms (`cmd/igsave-bot/main.go`): Instagram, TikTok, YouTube, Pornhub, Spotify.
+The bot is source-agnostic by design: `internal/bot` only ever talks to `platform.Provider` / `platform.QualityProvider` and `platform.MediaFile` (and, for persistence, `internal/cache`, which is likewise provider-agnostic — it just caches whatever files a `Provider.Download` produced). Registered platforms (`cmd/igsave-bot/main.go`): Instagram, TikTok, YouTube, Pornhub, xHamster, wow.xxx, Spotify. A host entry containing `*` is treated as a glob (`path.Match`), for sites that rotate mirror domains — xHamster is registered as `*xhamster*`, which covers `xhamster.com`, `xhamster46.desi`, `ge.xhamster46.desi`, and so on.
 
 ```go
 // internal/platform/provider.go
