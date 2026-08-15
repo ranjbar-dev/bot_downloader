@@ -223,6 +223,7 @@ func (p *YtDlpProvider) baseArgs(outTemplate, quality string) []string {
 		"--output", outTemplate,
 		"--no-warnings",
 		"--print", "after_move:filepath",
+		"--merge-output-format", "mp4",
 		// ponytail: YouTube's web player now serves SABR-only formats that
 		// 403 on direct download (yt-dlp/yt-dlp#16729). tv/android clients
 		// dodge the 403 too but as of 2026-07 only expose progressive 360p;
