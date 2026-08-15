@@ -190,7 +190,6 @@ JOB_TIMEOUT_SECONDS=1800
 ```
 
 `JOB_TIMEOUT_SECONDS` is not optional here: it caps the whole download, and a 2GB file will not arrive inside the 120s default — yt-dlp gets killed mid-file and the user sees a failure. Both services read this same file.
-
 ### 4. Start it
 
 ```bash
