@@ -113,7 +113,7 @@ func (bot *Bot) Run() error {
 
 func (bot *Bot) handleStart(b *gotgbot.Bot, ctx *ext.Context) error {
 	_, err := ctx.EffectiveMessage.Reply(b,
-		"👋 Send an Instagram, TikTok, YouTube, Pornhub, or Spotify link to download it. You need to be a member of our channel to use this bot.",
+		"👋 Send an Instagram, TikTok, YouTube, or Spotify link to download it. You need to be a member of our channel to use this bot.",
 		&gotgbot.SendMessageOpts{ReplyMarkup: bot.joinKeyboard()})
 	return err
 }
