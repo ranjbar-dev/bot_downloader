@@ -5,54 +5,62 @@ import (
 	"time"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
+
+	"igsave-bot/internal/store"
 )
 
-// gate checks Telegram channel membership, cached briefly so an active
-// chatter doesn't trigger a getChatMember call on every message.
+// memberStatuses that count as "in the channel". Kept in sync with the
+// status strings Telegram sends in chat_member updates and getChatMember.
+func isMemberStatus(status string) bool {
+	return status == "member" || status == "administrator" || status == "creator"
+}
+
+// gate checks Telegram channel membership. The source of truth is the
+// SQLite store, kept live by chat_member update events (bot.go's
+// handleChatMember) — so a user who leaves is rejected on their very next
+// message, no cache staleness window. A live GetChatMember call is only
+// made as a one-time bootstrap for a user the store has never seen (eg.
+// they joined before this bot started listening for events).
 type gate struct {
-	channel      int64
-	inviteLink   string
-	ttl          time.Duration
+	channel    int64
+	inviteLink string
+	store      *store.Store
+
 	mu           sync.Mutex
-	allowedUntil map[int64]time.Time // only positive results are cached
 	lastNotified map[int64]time.Time
 	notifyCool   time.Duration
 }
 
-func newGate(channel int64, inviteLink string) *gate {
+func newGate(channel int64, inviteLink string, s *store.Store) *gate {
 	return &gate{
 		channel:      channel,
 		inviteLink:   inviteLink,
-		ttl:          5 * time.Minute,
-		allowedUntil: make(map[int64]time.Time),
+		store:        s,
 		lastNotified: make(map[int64]time.Time),
 		notifyCool:   time.Minute,
 	}
 }
 
 func (g *gate) allowed(b *gotgbot.Bot, userID int64) (bool, error) {
-	g.mu.Lock()
-	// Never cache "not a member" - that would keep rejecting a user for up
-	// to g.ttl after they actually join. Only a cached "allowed" is trusted.
-	if until, ok := g.allowedUntil[userID]; ok && time.Now().Before(until) {
-		g.mu.Unlock()
-		return true, nil
+	status, known, err := g.store.Status(userID)
+	if err != nil {
+		return false, err
 	}
-	g.mu.Unlock()
+	if known {
+		return isMemberStatus(status), nil
+	}
 
+	// Bootstrap: no chat_member event seen for this user yet. Ask Telegram
+	// directly and seed the store so future messages are answered locally.
 	member, err := b.GetChatMember(g.channel, userID, nil)
 	if err != nil {
 		return false, err
 	}
-	status := member.GetStatus()
-	ok := status == "member" || status == "administrator" || status == "creator"
-
-	if ok {
-		g.mu.Lock()
-		g.allowedUntil[userID] = time.Now().Add(g.ttl)
-		g.mu.Unlock()
+	liveStatus := member.GetStatus()
+	if err := g.store.Upsert(userID, liveStatus, time.Now().Unix()); err != nil {
+		return false, err
 	}
-	return ok, nil
+	return isMemberStatus(liveStatus), nil
 }
 
 // shouldNotify reports whether a "join the channel" reply should be sent now

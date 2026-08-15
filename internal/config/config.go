@@ -10,6 +10,7 @@ type Config struct {
 	BotToken          string
 	GateChannel       int64
 	GateInviteLink    string
+	DBPath            string
 	CacheDir          string
 	CacheTTLSeconds   int
 	CacheMaxMB        int
@@ -29,6 +30,7 @@ func Load() (*Config, error) {
 		BotToken:          os.Getenv("BOT_TOKEN"),
 		GateChannel:       gateChannel,
 		GateInviteLink:    os.Getenv("GATE_CHANNEL_INVITE_LINK"),
+		DBPath:            getEnvDefault("DB_PATH", "/var/lib/igsave-bot/members.db"),
 		CacheDir:          getEnvDefault("CACHE_DIR", "/var/lib/igsave-bot/cache"),
 		CacheTTLSeconds:   getEnvIntDefault("CACHE_TTL_SECONDS", 3600),
 		CacheMaxMB:        getEnvIntDefault("CACHE_MAX_MB", 10000),

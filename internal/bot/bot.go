@@ -17,11 +17,13 @@ import (
 	"github.com/PaulSonOfLars/gotgbot/v2/ext"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/callbackquery"
+	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/chatmember"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/message"
 
 	"igsave-bot/internal/cache"
 	"igsave-bot/internal/config"
 	"igsave-bot/internal/platform"
+	"igsave-bot/internal/store"
 )
 
 var urlRe = regexp.MustCompile(`https?://\S+`)
@@ -49,11 +51,11 @@ type job struct {
 	provider platform.Provider
 }
 
-func New(cfg *config.Config, registry *platform.Registry) *Bot {
+func New(cfg *config.Config, registry *platform.Registry, members *store.Store) *Bot {
 	return &Bot{
 		cfg:      cfg,
 		registry: registry,
-		gate:     newGate(cfg.GateChannel, cfg.GateInviteLink),
+		gate:     newGate(cfg.GateChannel, cfg.GateInviteLink, members),
 		limiter:  newRateLimiter(5, 10*time.Minute),
 		cache:    cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
 		jobs:     make(chan job, 50),
@@ -81,10 +83,17 @@ func (bot *Bot) Run() error {
 	dispatcher.AddHandler(handlers.NewCommand("start", bot.handleStart))
 	dispatcher.AddHandler(handlers.NewMessage(message.Text, bot.handleMessage))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Equal(checkJoinCallback), bot.handleCheckJoin))
+	dispatcher.AddHandler(handlers.NewChatMember(chatmember.ChatId(bot.cfg.GateChannel), bot.handleChatMember))
 
 	updater := ext.NewUpdater(dispatcher, nil)
 	if err := updater.StartPolling(b, &ext.PollingOpts{
 		DropPendingUpdates: true,
+		GetUpdatesOpts: &gotgbot.GetUpdatesOpts{
+			// chat_member must be requested explicitly - it's not in Telegram's
+			// default update set. This is what keeps the gate's member store
+			// live as users join/leave the channel.
+			AllowedUpdates: []string{"message", "callback_query", "chat_member"},
+		},
 	}); err != nil {
 		return fmt.Errorf("start polling: %w", err)
 	}
@@ -110,6 +119,17 @@ func (bot *Bot) joinKeyboard() gotgbot.InlineKeyboardMarkup {
 			{{Text: "✅ I joined the channel", CallbackData: checkJoinCallback}},
 		},
 	}
+}
+
+// handleChatMember keeps the gate's SQLite member store live: every join,
+// leave, kick, or promotion in the gate channel updates the row for that
+// user immediately, so gate.allowed can answer from the store instead of
+// calling GetChatMember on every message.
+func (bot *Bot) handleChatMember(b *gotgbot.Bot, ctx *ext.Context) error {
+	cm := ctx.ChatMember
+	userID := cm.NewChatMember.GetUser().Id
+	status := cm.NewChatMember.GetStatus()
+	return bot.gate.store.Upsert(userID, status, cm.Date)
 }
 
 func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
