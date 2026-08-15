@@ -54,6 +54,7 @@ type job struct {
 	rawURL      string
 	provider    platform.Provider
 	quality     string // Value from platform.Quality, "" if provider has no quality choice
+	qualities   []platform.Quality // ladder shown for this request, cached so handleQuality resolves against the same list it was built from
 	statusMsgID int64
 }
 
@@ -179,7 +180,11 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 	}
 
 	if qp, ok := provider.(platform.QualityProvider); ok {
-		if qualities := qp.Qualities(); len(qualities) > 0 {
+		qctx, cancel := context.WithTimeout(context.Background(), time.Duration(bot.cfg.JobTimeoutSeconds)*time.Second)
+		qualities := qp.Qualities(qctx, rawURL)
+		cancel()
+		if len(qualities) > 0 {
+			j.qualities = qualities
 			bot.setPendingQuality(userID, j)
 			_, replyErr := msg.Reply(b, "🎚 Choose quality:", &gotgbot.SendMessageOpts{ReplyMarkup: qualityKeyboard(qualities)})
 			return replyErr
@@ -255,8 +260,9 @@ func (bot *Bot) takePendingQuality(userID int64) (job, bool) {
 }
 
 // handleQuality responds to a quality-selection button: resolves the picked
-// index against the pending job's own provider.Qualities() (never trusting
-// the callback's format string directly) and enqueues the download.
+// index against the pending job's own cached qualities ladder (never
+// trusting the callback's format string directly, and never re-probing —
+// that ladder is what the user was actually shown) and enqueues the download.
 func (bot *Bot) handleQuality(b *gotgbot.Bot, ctx *ext.Context) error {
 	cq := ctx.CallbackQuery
 	userID := ctx.EffectiveUser.Id
@@ -266,19 +272,14 @@ func (bot *Bot) handleQuality(b *gotgbot.Bot, ctx *ext.Context) error {
 		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "⌛ That request expired, send the link again.", ShowAlert: true})
 		return nil
 	}
-	qp, ok := j.provider.(platform.QualityProvider)
-	if !ok {
-		return nil
-	}
-	qualities := qp.Qualities()
 	idx, err := strconv.Atoi(strings.TrimPrefix(cq.Data, qualityCallbackPrefix))
-	if err != nil || idx < 0 || idx >= len(qualities) {
+	if err != nil || idx < 0 || idx >= len(j.qualities) {
 		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "❌ Invalid choice.", ShowAlert: true})
 		return nil
 	}
 
-	j.quality = qualities[idx].Value
-	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ " + qualities[idx].Label})
+	j.quality = j.qualities[idx].Value
+	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ " + j.qualities[idx].Label})
 	return bot.enqueue(b, j)
 }
 
