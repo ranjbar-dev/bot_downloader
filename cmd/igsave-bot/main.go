@@ -49,6 +49,7 @@ func main() {
 		platform.NewYtDlpProviderWithQuality("wow",
 			[]string{"wow.xxx", "www.wow.xxx"},
 			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
+		platform.NewPornFlipProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 		platform.NewSpotifyProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 	)
 
