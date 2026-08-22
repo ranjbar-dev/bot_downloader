@@ -50,6 +50,9 @@ func main() {
 			[]string{"wow.xxx", "www.wow.xxx"},
 			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
 		platform.NewPornFlipProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
+		platform.NewYtDlpProviderWithQuality("pornzog",
+			[]string{"pornzog.com", "www.pornzog.com"},
+			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
 		platform.NewSpotifyProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 	)
 
