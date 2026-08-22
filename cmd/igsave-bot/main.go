@@ -53,6 +53,9 @@ func main() {
 		platform.NewYtDlpProviderWithQuality("pornzog",
 			[]string{"pornzog.com", "www.pornzog.com"},
 			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
+		platform.NewYtDlpProviderWithQuality("xxbrits",
+			[]string{"xxbrits.com", "www.xxbrits.com"},
+			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
 		platform.NewSpotifyProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 	)
 
