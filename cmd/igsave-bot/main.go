@@ -59,6 +59,9 @@ func main() {
 		platform.NewYtDlpProviderWithQuality("foxtube",
 			[]string{"foxtube.com", "www.foxtube.com"},
 			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
+		platform.NewYtDlpProviderWithQuality("tube8",
+			[]string{"tube8.fr", "www.tube8.fr"},
+			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
 		platform.NewSpotifyProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 	)
 
