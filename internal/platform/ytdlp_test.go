@@ -1,7 +1,10 @@
 package platform
 
 import (
+	"context"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -25,5 +28,27 @@ func TestMatchHostsAndGlobs(t *testing.T) {
 		if got := p.Match(u); got != want {
 			t.Errorf("Match(%s) = %v, want %v", raw, got, want)
 		}
+	}
+}
+
+// TestOptimizeVideoFallsBackWithoutFfmpeg guards the contract callers rely
+// on: when ffmpeg is missing/fails, optimizeVideo errors and leaves the
+// original file untouched instead of deleting/corrupting it.
+func TestOptimizeVideoFallsBackWithoutFfmpeg(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(in, []byte("not a real video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", "") // force "ffmpeg not found"
+	defer os.Setenv("PATH", origPath)
+
+	if _, err := optimizeVideo(context.Background(), in); err == nil {
+		t.Fatal("expected error when ffmpeg is unavailable")
+	}
+	if _, err := os.Stat(in); err != nil {
+		t.Fatalf("original file should still exist: %v", err)
 	}
 }

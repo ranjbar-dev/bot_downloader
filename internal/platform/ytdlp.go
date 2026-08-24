@@ -338,7 +338,44 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 		}
 		return nil, fmt.Errorf("yt-dlp produced no output files")
 	}
-	return toMediaFiles(paths), nil
+	files := toMediaFiles(paths)
+	for i, f := range files {
+		if f.Kind == KindVideo {
+			if optimized, err := optimizeVideo(ctx, f.Path); err == nil {
+				files[i].Path = optimized
+			}
+		}
+	}
+	return files, nil
+}
+
+// optimizeVideo re-encodes a downloaded video to a visually-lossless CRF so
+// it uploads to Telegram faster/smaller, keeping the original if ffmpeg
+// isn't available, fails, or doesn't actually shrink the file.
+// ponytail: fixed CRF 20 rather than a bitrate/size target — good enough
+// across sources, revisit if a specific site's output needs tuning.
+func optimizeVideo(ctx context.Context, inPath string) (string, error) {
+	outPath := inPath + ".opt.mp4"
+	args := []string{
+		"-y", "-i", inPath,
+		"-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+		"-c:a", "aac", "-b:a", "128k",
+		"-movflags", "+faststart",
+		outPath,
+	}
+	if err := exec.CommandContext(ctx, "ffmpeg", args...).Run(); err != nil {
+		os.Remove(outPath)
+		return "", fmt.Errorf("ffmpeg optimize: %w", err)
+	}
+
+	inInfo, err1 := os.Stat(inPath)
+	outInfo, err2 := os.Stat(outPath)
+	if err1 != nil || err2 != nil || outInfo.Size() >= inInfo.Size() {
+		os.Remove(outPath)
+		return "", fmt.Errorf("optimized file not smaller")
+	}
+	os.Remove(inPath)
+	return outPath, nil
 }
 
 func toMediaFiles(paths []string) []MediaFile {
