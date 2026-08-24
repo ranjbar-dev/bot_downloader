@@ -33,6 +33,13 @@ var urlRe = regexp.MustCompile(`https?://\S+`)
 
 const checkJoinCallback = "check_join"
 const qualityCallbackPrefix = "q:"
+const instagramCallbackPrefix = "ig:"
+
+// instagramProfileQuality is a sentinel stored in job.quality to route a
+// profile-link job to InstagramProfile.DownloadProfile instead of the
+// regular Download/DownloadWithQuality path — Instagram never sets a real
+// quality itself, so the field is free to reuse as a mode discriminator.
+const instagramProfileQuality = "profile"
 
 type Bot struct {
 	cfg         *config.Config
@@ -109,6 +116,7 @@ func (bot *Bot) Run() error {
 	dispatcher.AddHandler(handlers.NewMessage(message.Text, bot.handleMessage))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Equal(checkJoinCallback), bot.handleCheckJoin))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Prefix(qualityCallbackPrefix), bot.handleQuality))
+	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Prefix(instagramCallbackPrefix), bot.handleInstagramChoice))
 	dispatcher.AddHandler(handlers.NewChatMember(chatmember.ChatId(bot.cfg.GateChannel), bot.handleChatMember))
 
 	updater := ext.NewUpdater(dispatcher, nil)
@@ -196,6 +204,12 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 		return replyErr
 	}
 
+	if ip, ok := provider.(platform.InstagramProfile); ok && ip.IsProfileURL(rawURL) {
+		bot.setPendingQuality(userID, j)
+		_, replyErr := msg.Reply(b, "🎚 Stories or profile info?", &gotgbot.SendMessageOpts{ReplyMarkup: instagramKeyboard()})
+		return replyErr
+	}
+
 	if qp, ok := provider.(platform.QualityProvider); ok {
 		qctx, cancel := context.WithTimeout(context.Background(), time.Duration(bot.cfg.JobTimeoutSeconds)*time.Second)
 		qualities := qp.Qualities(qctx, rawURL)
@@ -222,6 +236,13 @@ func qualityKeyboard(qualities []platform.Quality) gotgbot.InlineKeyboardMarkup 
 		})
 	}
 	return gotgbot.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func instagramKeyboard() gotgbot.InlineKeyboardMarkup {
+	return gotgbot.InlineKeyboardMarkup{InlineKeyboard: [][]gotgbot.InlineKeyboardButton{
+		{{Text: "📖 Stories", CallbackData: instagramCallbackPrefix + "story"}},
+		{{Text: "👤 Profile info", CallbackData: instagramCallbackPrefix + "profile"}},
+	}}
 }
 
 // enqueue sends the "Downloading..." status message, then submits j to the
@@ -300,6 +321,31 @@ func (bot *Bot) handleQuality(b *gotgbot.Bot, ctx *ext.Context) error {
 	return bot.enqueue(b, j)
 }
 
+// handleInstagramChoice responds to the story-vs-profile-info prompt shown
+// for a plain Instagram profile link. Stories aren't implemented yet — they
+// need an authenticated session, which this bot doesn't have — so that
+// choice just replies unsupported. Profile info enqueues the job with the
+// instagramProfileQuality sentinel so download() routes it to DownloadProfile.
+func (bot *Bot) handleInstagramChoice(b *gotgbot.Bot, ctx *ext.Context) error {
+	cq := ctx.CallbackQuery
+	userID := ctx.EffectiveUser.Id
+
+	j, ok := bot.takePendingQuality(userID)
+	if !ok {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "⌛ That request expired, send the link again.", ShowAlert: true})
+		return nil
+	}
+
+	if strings.TrimPrefix(cq.Data, instagramCallbackPrefix) == "story" {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "🚫 Story downloads aren't supported yet.", ShowAlert: true})
+		return nil
+	}
+
+	j.quality = instagramProfileQuality
+	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "👤 Profile info"})
+	return bot.enqueue(b, j)
+}
+
 // handleCheckJoin responds to the "I joined the channel" button: re-checks
 // membership and, if it now passes, runs the request that triggered the gate.
 func (bot *Bot) handleCheckJoin(b *gotgbot.Bot, ctx *ext.Context) error {
@@ -373,9 +419,12 @@ func (bot *Bot) download(j job, key string) ([]platform.MediaFile, error) {
 	defer cancel()
 
 	var files []platform.MediaFile
-	if j.quality != "" {
+	switch {
+	case j.quality == instagramProfileQuality:
+		files, err = j.provider.(platform.InstagramProfile).DownloadProfile(ctx, j.rawURL, dir)
+	case j.quality != "":
 		files, err = j.provider.(platform.QualityProvider).DownloadWithQuality(ctx, j.rawURL, dir, j.quality)
-	} else {
+	default:
 		files, err = j.provider.Download(ctx, j.rawURL, dir)
 	}
 	if err != nil {
@@ -442,7 +491,10 @@ func (bot *Bot) sendSingle(j job, f platform.MediaFile) error {
 	}
 	defer cleanup()
 
-	caption := bot.caption(j)
+	caption := f.Caption
+	if caption == "" {
+		caption = bot.caption(j)
+	}
 	switch f.Kind {
 	case platform.KindPhoto:
 		_, err = j.b.SendPhoto(j.chatID, input, &gotgbot.SendPhotoOpts{Caption: caption})

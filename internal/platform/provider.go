@@ -21,6 +21,10 @@ const (
 type MediaFile struct {
 	Path string
 	Kind MediaKind
+	// Caption overrides the bot's default "via @bot / link" caption when
+	// non-empty — used for content (e.g. Instagram profile info) that needs
+	// its own client-facing text instead.
+	Caption string
 }
 
 // Provider handles one source site. Match decides ownership of a URL;
