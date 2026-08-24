@@ -64,7 +64,7 @@ func New(cfg *config.Config, registry *platform.Registry, members *store.Store) 
 		cfg:            cfg,
 		registry:       registry,
 		gate:           newGate(cfg.GateChannel, cfg.GateInviteLink, members),
-		limiter:        newRateLimiter(5, 10*time.Minute),
+		limiter:        newRateLimiter(30, 10*time.Minute),
 		cache:          cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
 		jobs:           make(chan job, 50),
 		pending:        make(map[int64]job),
