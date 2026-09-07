@@ -61,7 +61,7 @@ type job struct {
 	userID      int64
 	rawURL      string
 	provider    platform.Provider
-	quality     string // Value from platform.Quality, "" if provider has no quality choice
+	quality     string             // Value from platform.Quality, "" if provider has no quality choice
 	qualities   []platform.Quality // ladder shown for this request, cached so handleQuality resolves against the same list it was built from
 	statusMsgID int64
 }
@@ -139,7 +139,7 @@ func (bot *Bot) Run() error {
 
 func (bot *Bot) handleStart(b *gotgbot.Bot, ctx *ext.Context) error {
 	_, err := ctx.EffectiveMessage.Reply(b,
-		"👋 Send an Instagram, TikTok, YouTube, or Spotify link to download it. You need to be a member of our channel to use this bot.",
+		"👋 Send an Instagram, X (Twitter), TikTok, YouTube, or Spotify link to download it. You need to be a member of our channel to use this bot.",
 		&gotgbot.SendMessageOpts{ReplyMarkup: bot.joinKeyboard()})
 	return err
 }

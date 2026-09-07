@@ -4,6 +4,17 @@ Telegram bot, self-hosted on your VPS. Send it an Instagram link (reel, video, p
 
 Full design/spec: [docs/index.md](docs/index.md)
 
+## X (Twitter) downloads
+
+Send a public post link from `x.com` or `twitter.com` (including `www`, `m`,
+and `mobile` hosts). Shared links with tracking parameters such as
+`https://x.com/r0f0ell/status/2096875398680162465?s=46` are supported.
+The bot downloads videos and animated GIFs at the best available quality
+through the existing yt-dlp backend, with the same channel gate, cache,
+timeout, and upload-size limits as other platforms. No extra configuration
+is required; keep yt-dlp up to date. Photo-only posts and posts requiring
+login are not supported by this integration.
+
 ## How it works (user's-eye view)
 
 1. User sends the bot any message containing an `instagram.com` link.
@@ -250,4 +261,4 @@ docs/                                 full design spec, split by topic — start
 
 ## Adding a new platform later
 
-See [docs/extending-platforms.md](docs/extending-platforms.md) — YouTube, TikTok, Twitter/X are a one-line addition since they already work through yt-dlp; sites yt-dlp can't reach (Spotify) need a small new `Provider` implementation. Neither case touches `internal/bot` or `internal/cache`.
+See [docs/extending-platforms.md](docs/extending-platforms.md) — yt-dlp-backed platforms such as X use the shared downloader; sites yt-dlp can't reach (Spotify) need a small new `Provider` implementation. Neither case changes the bot's download or cache logic.

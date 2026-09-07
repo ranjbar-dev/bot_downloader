@@ -34,6 +34,7 @@ func main() {
 	// for non-yt-dlp sites like Spotify) plus a line in this list.
 	registry := platform.NewRegistry(
 		platform.NewInstagramProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
+		platform.NewXProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 		platform.NewYtDlpProvider("tiktok",
 			[]string{"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"},
 			cfg.YtDlpPath, cfg.MaxUploadMB),
