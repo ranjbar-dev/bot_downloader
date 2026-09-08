@@ -35,6 +35,15 @@ type Provider interface {
 	Download(ctx context.Context, rawURL string, destDir string) ([]MediaFile, error)
 }
 
+// ProgressProvider is an optional extension for providers that can report
+// byte-level download progress. Percent is in the inclusive range 0..100.
+// The bot falls back to phase-only status updates for providers that do not
+// implement it.
+type ProgressProvider interface {
+	Provider
+	DownloadWithProgress(ctx context.Context, rawURL, destDir, quality string, report func(percent int)) ([]MediaFile, error)
+}
+
 type Registry struct {
 	providers []Provider
 }

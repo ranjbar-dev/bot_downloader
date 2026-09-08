@@ -228,6 +228,35 @@ Then send a >50MB video link through the bot and watch it succeed where it previ
 - **RAM budget**: `igsave-bot` (`MemoryMax=700M`) + `telegram-bot-api` (`MemoryMax=768M`) ≈ 1.5GB of caps on a 2GB box. That's deliberately tight against the OS; keep swap enabled.
 - **Disk**: at a 2000 MB ceiling the cache fills far faster. `CACHE_MAX_MB=10000` now holds ~5 entries — still correct, just a lower hit rate. Lower `CACHE_TTL_SECONDS` if you'd rather churn than cache.
 
+## Direct and Telegram delivery choices
+
+After a user sends a supported link, the bot asks whether to provide a direct
+download, upload the media to Telegram, or do both. Providers with multiple
+formats ask for video/audio quality after that choice. Each answered picker is
+removed, then one status message is updated every 3-8 seconds with download,
+processing, direct-link, and Telegram-upload progress.
+
+Set `DIRECT_DOWNLOAD_BASE_URL` to enable the **Direct download** and **Both**
+choices. Without it, the bot keeps the picker visible and tells users to choose
+Telegram delivery. Completed, unexpired cache files are served under
+`/downloads/`; links stop working when normal cache eviction removes the files.
+
+```env
+DIRECT_DOWNLOAD_BASE_URL=https://downloads.example.com
+DIRECT_DOWNLOAD_LISTEN_ADDR=127.0.0.1:8082
+```
+
+The listener defaults to loopback. Put it behind your HTTPS reverse proxy and
+forward `/downloads/` to `http://127.0.0.1:8082`, or deliberately bind it to a
+public interface and set the base URL to that address. The cache-key component
+of each URL is an unguessable SHA-256 value, and directory listings and partial
+downloads are not exposed.
+
+Telegram's Bot API does not expose upload byte progress, so upload percentages
+are phase-based estimates capped below completion; yt-dlp download percentages
+come from the downloader itself. To upload videos over 50 MiB into Telegram,
+keep using the local Bot API setup above.
+
 ## Sizing for a small VPS (1 CPU / 1GB RAM / 30GB disk)
 
 This is the profile the defaults are tuned for. If your box looks like this:

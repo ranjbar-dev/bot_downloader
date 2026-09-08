@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -35,6 +34,14 @@ func (p *SpotifyProvider) Match(u *url.URL) bool {
 }
 
 func (p *SpotifyProvider) Download(ctx context.Context, rawURL string, destDir string) ([]MediaFile, error) {
+	return p.download(ctx, rawURL, destDir, nil)
+}
+
+func (p *SpotifyProvider) DownloadWithProgress(ctx context.Context, rawURL, destDir, _ string, report func(int)) ([]MediaFile, error) {
+	return p.download(ctx, rawURL, destDir, report)
+}
+
+func (p *SpotifyProvider) download(ctx context.Context, rawURL string, destDir string, report func(int)) ([]MediaFile, error) {
 	title, err := spotifyOEmbedTitle(ctx, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("resolve spotify track: %w", err)
@@ -51,12 +58,14 @@ func (p *SpotifyProvider) Download(ctx context.Context, rawURL string, destDir s
 	if p.maxSizeMB > 0 {
 		args = append(args, "--max-filesize", fmt.Sprintf("%dM", p.maxSizeMB))
 	}
+	if report != nil {
+		args = append(args, "--newline", "--progress-template", "download:progress:%(progress._percent_str)s")
+	}
 	// "ytsearch1:" prefix makes yt-dlp search YouTube and take the top hit,
 	// and guarantees the arg can't be mistaken for a yt-dlp flag.
 	args = append(args, "ytsearch1:"+title)
 
-	cmd := exec.CommandContext(ctx, p.binPath, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runYtDlpCommand(ctx, p.binPath, args, report)
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed: %w (%s)", err, truncate(string(out), 500))
 	}

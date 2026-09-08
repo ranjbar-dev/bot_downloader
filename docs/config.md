@@ -17,6 +17,8 @@ Env vars (loaded via `config.env`, plain `os.Getenv` + a small loader — no con
 | `TELEGRAM_BOT_API_URL` | no (default public API) | `http://127.0.0.1:8081` | Local Bot API server; also switches sends to hand-over-by-path |
 | `TELEGRAM_API_ID` | only for the local server | `1234567` | my.telegram.org user app credential — read by `telegram-bot-api`, not by the bot |
 | `TELEGRAM_API_HASH` | only for the local server | | Same; **not** the bot token |
+| `DIRECT_DOWNLOAD_BASE_URL` | no | `https://downloads.example.com` | Enables the Direct download and Both choices; links remain valid while files are cached |
+| `DIRECT_DOWNLOAD_LISTEN_ADDR` | no (default `127.0.0.1:8082`) | `127.0.0.1:8082` | HTTP listener serving `/downloads/`; expose it directly or through a reverse proxy |
 | `WORKER_COUNT` | no (default `2`) | | Concurrent download workers — set to `1` on a single-CPU VPS |
 | `JOB_TIMEOUT_SECONDS` | no (default `120`) | | Per-download timeout — raise to ~`1800` if `TELEGRAM_MAX_UPLOAD_MB` is raised, a 2GB download does not finish in 120s |
 

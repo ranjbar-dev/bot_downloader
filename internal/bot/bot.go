@@ -34,6 +34,15 @@ var urlRe = regexp.MustCompile(`https?://\S+`)
 const checkJoinCallback = "check_join"
 const qualityCallbackPrefix = "q:"
 const instagramCallbackPrefix = "ig:"
+const deliveryCallbackPrefix = "delivery:"
+
+type deliveryMode string
+
+const (
+	deliveryDirect   deliveryMode = "direct"
+	deliveryTelegram deliveryMode = "telegram"
+	deliveryBoth     deliveryMode = "both"
+)
 
 // instagramProfileQuality is a sentinel stored in job.quality to route a
 // profile-link job to InstagramProfile.DownloadProfile instead of the
@@ -50,9 +59,10 @@ type Bot struct {
 	jobs        chan job
 	botUsername string
 
-	pendingMu      sync.Mutex
-	pending        map[int64]job // last blocked request per user, retried from the "I joined" button
-	pendingQuality map[int64]job // last request per user awaiting a quality pick
+	pendingMu       sync.Mutex
+	pending         map[int64]job // last blocked request per user, retried from the "I joined" button
+	pendingDelivery map[int64]job // last request per user awaiting a delivery-mode pick
+	pendingQuality  map[int64]job // last request per user awaiting a quality pick
 }
 
 type job struct {
@@ -63,23 +73,28 @@ type job struct {
 	provider    platform.Provider
 	quality     string             // Value from platform.Quality, "" if provider has no quality choice
 	qualities   []platform.Quality // ladder shown for this request, cached so handleQuality resolves against the same list it was built from
+	delivery    deliveryMode
 	statusMsgID int64
 }
 
 func New(cfg *config.Config, registry *platform.Registry, members *store.Store) *Bot {
 	return &Bot{
-		cfg:            cfg,
-		registry:       registry,
-		gate:           newGate(cfg.GateChannel, cfg.GateInviteLink, members),
-		limiter:        newRateLimiter(30, 10*time.Minute),
-		cache:          cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
-		jobs:           make(chan job, 50),
-		pending:        make(map[int64]job),
-		pendingQuality: make(map[int64]job),
+		cfg:             cfg,
+		registry:        registry,
+		gate:            newGate(cfg.GateChannel, cfg.GateInviteLink, members),
+		limiter:         newRateLimiter(30, 10*time.Minute),
+		cache:           cache.New(cfg.CacheDir, time.Duration(cfg.CacheTTLSeconds)*time.Second, int64(cfg.CacheMaxMB)*1024*1024),
+		jobs:            make(chan job, 50),
+		pending:         make(map[int64]job),
+		pendingDelivery: make(map[int64]job),
+		pendingQuality:  make(map[int64]job),
 	}
 }
 
 func (bot *Bot) Run() error {
+	if err := bot.startDownloadServer(); err != nil {
+		return err
+	}
 	var botOpts *gotgbot.BotOpts
 	if bot.cfg.BotAPIURL != "" {
 		// The default 5s per-request timeout is fine against the public API,
@@ -115,6 +130,7 @@ func (bot *Bot) Run() error {
 	dispatcher.AddHandler(handlers.NewCommand("start", bot.handleStart))
 	dispatcher.AddHandler(handlers.NewMessage(message.Text, bot.handleMessage))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Equal(checkJoinCallback), bot.handleCheckJoin))
+	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Prefix(deliveryCallbackPrefix), bot.handleDelivery))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Prefix(qualityCallbackPrefix), bot.handleQuality))
 	dispatcher.AddHandler(handlers.NewCallback(callbackquery.Prefix(instagramCallbackPrefix), bot.handleInstagramChoice))
 	dispatcher.AddHandler(handlers.NewChatMember(chatmember.ChatId(bot.cfg.GateChannel), bot.handleChatMember))
@@ -204,24 +220,40 @@ func (bot *Bot) handleMessage(b *gotgbot.Bot, ctx *ext.Context) error {
 		return replyErr
 	}
 
-	if ip, ok := provider.(platform.InstagramProfile); ok && ip.IsProfileURL(rawURL) {
-		bot.setPendingQuality(userID, j)
-		_, replyErr := msg.Reply(b, "🎚 Stories or profile info?", &gotgbot.SendMessageOpts{ReplyMarkup: instagramKeyboard()})
-		return replyErr
-	}
+	return bot.promptDelivery(b, j)
+}
 
-	if qp, ok := provider.(platform.QualityProvider); ok {
+func deliveryKeyboard() gotgbot.InlineKeyboardMarkup {
+	return gotgbot.InlineKeyboardMarkup{InlineKeyboard: [][]gotgbot.InlineKeyboardButton{
+		{{Text: "🔗 Direct download", CallbackData: deliveryCallbackPrefix + string(deliveryDirect)}},
+		{{Text: "📥 Telegram download", CallbackData: deliveryCallbackPrefix + string(deliveryTelegram)}},
+		{{Text: "📦 Both", CallbackData: deliveryCallbackPrefix + string(deliveryBoth)}},
+	}}
+}
+
+func (bot *Bot) promptDelivery(b *gotgbot.Bot, j job) error {
+	bot.setPendingDelivery(j.userID, j)
+	_, err := b.SendMessage(j.chatID, "📦 How would you like to receive it?", &gotgbot.SendMessageOpts{ReplyMarkup: deliveryKeyboard()})
+	return err
+}
+
+func (bot *Bot) promptNextChoice(b *gotgbot.Bot, j job) error {
+	if ip, ok := j.provider.(platform.InstagramProfile); ok && ip.IsProfileURL(j.rawURL) {
+		bot.setPendingQuality(j.userID, j)
+		_, err := b.SendMessage(j.chatID, "🎚 Stories or profile info?", &gotgbot.SendMessageOpts{ReplyMarkup: instagramKeyboard()})
+		return err
+	}
+	if qp, ok := j.provider.(platform.QualityProvider); ok {
 		qctx, cancel := context.WithTimeout(context.Background(), time.Duration(bot.cfg.JobTimeoutSeconds)*time.Second)
-		qualities := qp.Qualities(qctx, rawURL)
+		qualities := qp.Qualities(qctx, j.rawURL)
 		cancel()
 		if len(qualities) > 0 {
 			j.qualities = qualities
-			bot.setPendingQuality(userID, j)
-			_, replyErr := msg.Reply(b, "🎚 Choose quality:", &gotgbot.SendMessageOpts{ReplyMarkup: qualityKeyboard(qualities)})
-			return replyErr
+			bot.setPendingQuality(j.userID, j)
+			_, err := b.SendMessage(j.chatID, "🎚 Choose quality:", &gotgbot.SendMessageOpts{ReplyMarkup: qualityKeyboard(qualities)})
+			return err
 		}
 	}
-
 	return bot.enqueue(b, j)
 }
 
@@ -281,6 +313,22 @@ func (bot *Bot) takePending(userID int64) (job, bool) {
 	return j, ok
 }
 
+func (bot *Bot) setPendingDelivery(userID int64, j job) {
+	bot.pendingMu.Lock()
+	bot.pendingDelivery[userID] = j
+	bot.pendingMu.Unlock()
+}
+
+func (bot *Bot) takePendingDelivery(userID int64) (job, bool) {
+	bot.pendingMu.Lock()
+	defer bot.pendingMu.Unlock()
+	j, ok := bot.pendingDelivery[userID]
+	if ok {
+		delete(bot.pendingDelivery, userID)
+	}
+	return j, ok
+}
+
 func (bot *Bot) setPendingQuality(userID int64, j job) {
 	bot.pendingMu.Lock()
 	bot.pendingQuality[userID] = j
@@ -295,6 +343,52 @@ func (bot *Bot) takePendingQuality(userID int64) (job, bool) {
 		delete(bot.pendingQuality, userID)
 	}
 	return j, ok
+}
+
+func (bot *Bot) handleDelivery(b *gotgbot.Bot, ctx *ext.Context) error {
+	cq := ctx.CallbackQuery
+	userID := ctx.EffectiveUser.Id
+
+	j, ok := bot.takePendingDelivery(userID)
+	if !ok {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "⌛ That request expired, send the link again.", ShowAlert: true})
+		return nil
+	}
+	mode := deliveryMode(strings.TrimPrefix(cq.Data, deliveryCallbackPrefix))
+	if mode != deliveryDirect && mode != deliveryTelegram && mode != deliveryBoth {
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "❌ Invalid choice.", ShowAlert: true})
+		return nil
+	}
+	if mode != deliveryTelegram && bot.cfg.DirectDownloadBaseURL == "" {
+		bot.setPendingDelivery(userID, j)
+		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "⚠️ Direct downloads aren't configured. Choose Telegram download.", ShowAlert: true})
+		return nil
+	}
+
+	j.delivery = mode
+	deleteCallbackMessage(b, cq)
+	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ " + deliveryLabel(mode)})
+	return bot.promptNextChoice(b, j)
+}
+
+func deliveryLabel(mode deliveryMode) string {
+	switch mode {
+	case deliveryDirect:
+		return "Direct download"
+	case deliveryBoth:
+		return "Telegram + direct download"
+	default:
+		return "Telegram download"
+	}
+}
+
+func deleteCallbackMessage(b *gotgbot.Bot, cq *gotgbot.CallbackQuery) {
+	if cq.Message == nil {
+		return
+	}
+	if _, err := cq.Message.Delete(b, nil); err != nil {
+		log.Println("delete choice message failed:", err)
+	}
 }
 
 // handleQuality responds to a quality-selection button: resolves the picked
@@ -317,6 +411,7 @@ func (bot *Bot) handleQuality(b *gotgbot.Bot, ctx *ext.Context) error {
 	}
 
 	j.quality = j.qualities[idx].Value
+	deleteCallbackMessage(b, cq)
 	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ " + j.qualities[idx].Label})
 	return bot.enqueue(b, j)
 }
@@ -337,11 +432,13 @@ func (bot *Bot) handleInstagramChoice(b *gotgbot.Bot, ctx *ext.Context) error {
 	}
 
 	if strings.TrimPrefix(cq.Data, instagramCallbackPrefix) == "story" {
+		deleteCallbackMessage(b, cq)
 		_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "🚫 Story downloads aren't supported yet.", ShowAlert: true})
 		return nil
 	}
 
 	j.quality = instagramProfileQuality
+	deleteCallbackMessage(b, cq)
 	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "👤 Profile info"})
 	return bot.enqueue(b, j)
 }
@@ -369,7 +466,7 @@ func (bot *Bot) handleCheckJoin(b *gotgbot.Bot, ctx *ext.Context) error {
 		return nil
 	}
 
-	err = bot.enqueue(b, j)
+	err = bot.promptDelivery(b, j)
 	_, _ = cq.Answer(b, &gotgbot.AnswerCallbackQueryOpts{Text: "✅ Joined!"})
 	return err
 }
@@ -381,6 +478,9 @@ func (bot *Bot) worker() {
 }
 
 func (bot *Bot) process(j job) {
+	tracker := newStatusTracker(j)
+	defer tracker.stop()
+
 	key := cache.Key(j.rawURL, j.quality)
 	release := bot.cache.Lock(key)
 	defer release()
@@ -388,17 +488,42 @@ func (bot *Bot) process(j job) {
 	files, hit := bot.cache.Lookup(key)
 	if !hit {
 		var err error
-		files, err = bot.download(j, key)
+		files, err = bot.download(j, key, tracker.setDownloadPercent)
 		if err != nil {
 			log.Printf("download failed [%s]: %v", j.provider.Name(), err)
+			tracker.stop()
 			bot.sendError(j, "❌ Couldn't download that — post may be private, removed, or too large.")
 			return
 		}
 	}
+	tracker.setPhase(phaseProcessing)
 
+	if j.delivery == deliveryDirect || j.delivery == deliveryBoth {
+		tracker.setPhase(phaseDirectLink)
+		if j.delivery == deliveryDirect {
+			tracker.stop()
+			if err := bot.finishWithDirectLinks(j, files, "✅ Your direct download is ready."); err != nil {
+				log.Println("direct link failed:", err)
+				bot.sendError(j, "❌ Downloaded it, but couldn't create the direct link.")
+			}
+			return
+		}
+	}
+
+	tracker.setPhase(phaseUploading)
 	if err := bot.sendFiles(j, files); err != nil {
 		log.Println("send failed:", err)
+		tracker.stop()
 		bot.sendError(j, "❌ Downloaded it, but couldn't send it back — try again later.")
+		return
+	}
+
+	tracker.stop()
+	if j.delivery == deliveryBoth {
+		if err := bot.finishWithDirectLinks(j, files, "✅ Telegram upload complete. Direct download is ready too."); err != nil {
+			log.Println("direct link failed:", err)
+			bot.sendError(j, "⚠️ Telegram upload finished, but the direct link couldn't be created.")
+		}
 		return
 	}
 
@@ -409,7 +534,7 @@ func (bot *Bot) process(j job) {
 
 // download runs the provider into the cache dir for key and marks the
 // entry done on success. Caller must hold the key's cache lock.
-func (bot *Bot) download(j job, key string) ([]platform.MediaFile, error) {
+func (bot *Bot) download(j job, key string, report func(int)) ([]platform.MediaFile, error) {
 	dir, err := bot.cache.PrepareDir(key)
 	if err != nil {
 		return nil, fmt.Errorf("prepare cache dir: %w", err)
@@ -422,6 +547,8 @@ func (bot *Bot) download(j job, key string) ([]platform.MediaFile, error) {
 	switch {
 	case j.quality == instagramProfileQuality:
 		files, err = j.provider.(platform.InstagramProfile).DownloadProfile(ctx, j.rawURL, dir)
+	case implementsProgress(j.provider):
+		files, err = j.provider.(platform.ProgressProvider).DownloadWithProgress(ctx, j.rawURL, dir, j.quality, report)
 	case j.quality != "":
 		files, err = j.provider.(platform.QualityProvider).DownloadWithQuality(ctx, j.rawURL, dir, j.quality)
 	default:
@@ -437,7 +564,17 @@ func (bot *Bot) download(j job, key string) ([]platform.MediaFile, error) {
 	return files, nil
 }
 
+func implementsProgress(provider platform.Provider) bool {
+	_, ok := provider.(platform.ProgressProvider)
+	return ok
+}
+
 func (bot *Bot) sendError(j job, text string) {
+	if j.statusMsgID != 0 {
+		if _, _, err := j.b.EditMessageText(text, &gotgbot.EditMessageTextOpts{ChatId: j.chatID, MessageId: j.statusMsgID}); err == nil {
+			return
+		}
+	}
 	if _, err := j.b.SendMessage(j.chatID, text, nil); err != nil {
 		log.Println("send error message failed:", err)
 	}
@@ -491,10 +628,7 @@ func (bot *Bot) sendSingle(j job, f platform.MediaFile) error {
 	}
 	defer cleanup()
 
-	caption := f.Caption
-	if caption == "" {
-		caption = bot.caption(j)
-	}
+	caption := bot.captionForFile(j, f)
 	switch f.Kind {
 	case platform.KindPhoto:
 		_, err = j.b.SendPhoto(j.chatID, input, &gotgbot.SendPhotoOpts{Caption: caption})
@@ -509,6 +643,13 @@ func (bot *Bot) sendSingle(j job, f platform.MediaFile) error {
 func (bot *Bot) sendGroup(j job, files []platform.MediaFile) error {
 	const chunkSize = 10
 	caption := bot.caption(j)
+	for _, f := range files {
+		fileCaption := bot.captionForFile(j, f)
+		const directLinkMarker = "\n⬇️ Direct download: "
+		if marker := strings.Index(fileCaption, directLinkMarker); marker >= 0 {
+			caption += fileCaption[marker:]
+		}
+	}
 	for i := 0; i < len(files); i += chunkSize {
 		end := min(i+chunkSize, len(files))
 		chunk := files[i:end]

@@ -73,6 +73,21 @@ func (p *XHamsterProvider) Download(ctx context.Context, rawURL, destDir string)
 	return p.DownloadWithQuality(ctx, rawURL, destDir, "")
 }
 
+func (p *XHamsterProvider) DownloadWithProgress(ctx context.Context, rawURL, destDir, quality string, report func(int)) ([]MediaFile, error) {
+	sources, err := p.sources(ctx, rawURL)
+	if err != nil || len(sources) == 0 {
+		return p.YtDlpProvider.download(ctx, rawURL, destDir, "", report)
+	}
+	direct := sources[0].URL
+	for _, s := range sources {
+		if fmt.Sprintf("%dp", s.Height) == quality {
+			direct = s.URL
+			break
+		}
+	}
+	return p.YtDlpProvider.download(ctx, direct, destDir, "", report)
+}
+
 // DownloadWithQuality resolves quality ("720p", or "" for the best available)
 // to a direct mp4 URL and downloads that. If the page can't be parsed — site
 // redesign, or yt-dlp's extractor started working again — it falls back to
@@ -80,7 +95,7 @@ func (p *XHamsterProvider) Download(ctx context.Context, rawURL, destDir string)
 func (p *XHamsterProvider) DownloadWithQuality(ctx context.Context, rawURL, destDir, quality string) ([]MediaFile, error) {
 	sources, err := p.sources(ctx, rawURL)
 	if err != nil || len(sources) == 0 {
-		return p.YtDlpProvider.download(ctx, rawURL, destDir, "")
+		return p.YtDlpProvider.download(ctx, rawURL, destDir, "", nil)
 	}
 	direct := sources[0].URL // sources are sorted best-first
 	for _, s := range sources {
@@ -89,7 +104,7 @@ func (p *XHamsterProvider) DownloadWithQuality(ctx context.Context, rawURL, dest
 			break
 		}
 	}
-	return p.YtDlpProvider.download(ctx, direct, destDir, "")
+	return p.YtDlpProvider.download(ctx, direct, destDir, "", nil)
 }
 
 // sources fetches the video page and returns its renditions, best first.

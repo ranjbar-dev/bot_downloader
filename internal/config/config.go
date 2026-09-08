@@ -7,18 +7,20 @@ import (
 )
 
 type Config struct {
-	BotToken          string
-	GateChannel       int64
-	GateInviteLink    string
-	DBPath            string
-	CacheDir          string
-	CacheTTLSeconds   int
-	CacheMaxMB        int
-	YtDlpPath         string
-	BotAPIURL         string
-	MaxUploadMB       int
-	WorkerCount       int
-	JobTimeoutSeconds int
+	BotToken                 string
+	GateChannel              int64
+	GateInviteLink           string
+	DBPath                   string
+	CacheDir                 string
+	CacheTTLSeconds          int
+	CacheMaxMB               int
+	YtDlpPath                string
+	BotAPIURL                string
+	DirectDownloadBaseURL    string
+	DirectDownloadListenAddr string
+	MaxUploadMB              int
+	WorkerCount              int
+	JobTimeoutSeconds        int
 }
 
 func Load() (*Config, error) {
@@ -28,22 +30,27 @@ func Load() (*Config, error) {
 	}
 
 	c := &Config{
-		BotToken:          os.Getenv("BOT_TOKEN"),
-		GateChannel:       gateChannel,
-		GateInviteLink:    os.Getenv("GATE_CHANNEL_INVITE_LINK"),
-		DBPath:            getEnvDefault("DB_PATH", "/var/lib/igsave-bot/members.db"),
-		CacheDir:          getEnvDefault("CACHE_DIR", "/var/lib/igsave-bot/cache"),
-		CacheTTLSeconds:   getEnvIntDefault("CACHE_TTL_SECONDS", 3600),
-		CacheMaxMB:        getEnvIntDefault("CACHE_MAX_MB", 10000),
-		YtDlpPath:         getEnvDefault("YT_DLP_PATH", "yt-dlp"),
+		BotToken:        os.Getenv("BOT_TOKEN"),
+		GateChannel:     gateChannel,
+		GateInviteLink:  os.Getenv("GATE_CHANNEL_INVITE_LINK"),
+		DBPath:          getEnvDefault("DB_PATH", "/var/lib/igsave-bot/members.db"),
+		CacheDir:        getEnvDefault("CACHE_DIR", "/var/lib/igsave-bot/cache"),
+		CacheTTLSeconds: getEnvIntDefault("CACHE_TTL_SECONDS", 3600),
+		CacheMaxMB:      getEnvIntDefault("CACHE_MAX_MB", 10000),
+		YtDlpPath:       getEnvDefault("YT_DLP_PATH", "yt-dlp"),
 		// Empty means the public Bot API (50MB upload cap). Set to a local
 		// telegram-bot-api server (e.g. http://127.0.0.1:8081) to lift that to
 		// ~2GB; the bot then also hands files over by path instead of
 		// uploading them, so raise TELEGRAM_MAX_UPLOAD_MB alongside it.
-		BotAPIURL:         getEnvDefault("TELEGRAM_BOT_API_URL", ""),
-		MaxUploadMB:       getEnvIntDefault("TELEGRAM_MAX_UPLOAD_MB", 50),
-		WorkerCount:       getEnvIntDefault("WORKER_COUNT", 2),
-		JobTimeoutSeconds: getEnvIntDefault("JOB_TIMEOUT_SECONDS", 120),
+		BotAPIURL: getEnvDefault("TELEGRAM_BOT_API_URL", ""),
+		// When set, videos larger than Telegram's public 50 MiB limit get a
+		// direct-download URL in their caption. The listen address is separate
+		// so the endpoint can sit safely behind a reverse proxy.
+		DirectDownloadBaseURL:    getEnvDefault("DIRECT_DOWNLOAD_BASE_URL", ""),
+		DirectDownloadListenAddr: getEnvDefault("DIRECT_DOWNLOAD_LISTEN_ADDR", "127.0.0.1:8082"),
+		MaxUploadMB:              getEnvIntDefault("TELEGRAM_MAX_UPLOAD_MB", 50),
+		WorkerCount:              getEnvIntDefault("WORKER_COUNT", 2),
+		JobTimeoutSeconds:        getEnvIntDefault("JOB_TIMEOUT_SECONDS", 120),
 	}
 	if c.BotToken == "" {
 		return nil, fmt.Errorf("BOT_TOKEN required")

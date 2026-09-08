@@ -1,12 +1,32 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
+
+func TestScanCommandOutputReportsProgressAndPreservesOutput(t *testing.T) {
+	var dst bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var reported []int
+	scanCommandOutput(bytes.NewBufferString("progress: 20.5%\n/tmp/video.mp4\n"), &dst, func(percent int) {
+		reported = append(reported, percent)
+	}, &wg)
+	wg.Wait()
+	if len(reported) != 1 || reported[0] != 20 {
+		t.Fatalf("reported = %v, want [20]", reported)
+	}
+	paths := parsePrintedPaths(dst.String())
+	if len(paths) != 1 || paths[0] != "/tmp/video.mp4" {
+		t.Fatalf("paths = %v, want [/tmp/video.mp4]", paths)
+	}
+}
 
 func TestMatchHostsAndGlobs(t *testing.T) {
 	p := NewYtDlpProvider("xhamster", []string{"xhamster.com", "*xhamster*", "*xhvid.*"}, "yt-dlp", 0)

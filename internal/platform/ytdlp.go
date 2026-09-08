@@ -1,15 +1,20 @@
 package platform
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/dustin/go-humanize"
 )
@@ -246,11 +251,15 @@ func sizedLabel(label string, size int64) string {
 }
 
 func (p *YtDlpProvider) Download(ctx context.Context, rawURL string, destDir string) ([]MediaFile, error) {
-	return p.download(ctx, rawURL, destDir, "")
+	return p.download(ctx, rawURL, destDir, "", nil)
 }
 
 func (p *YtDlpProvider) DownloadWithQuality(ctx context.Context, rawURL, destDir, quality string) ([]MediaFile, error) {
-	return p.download(ctx, rawURL, destDir, quality)
+	return p.download(ctx, rawURL, destDir, quality, nil)
+}
+
+func (p *YtDlpProvider) DownloadWithProgress(ctx context.Context, rawURL, destDir, quality string, report func(int)) ([]MediaFile, error) {
+	return p.download(ctx, rawURL, destDir, quality, report)
 }
 
 func (p *YtDlpProvider) baseArgs(outTemplate, quality string) []string {
@@ -278,9 +287,13 @@ func (p *YtDlpProvider) baseArgs(outTemplate, quality string) []string {
 
 // download shells out to yt-dlp with an argument slice — never a shell
 // string — so nothing in rawURL can break out into a shell command.
-func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality string) ([]MediaFile, error) {
+func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality string, report func(int)) ([]MediaFile, error) {
 	outTemplate := filepath.Join(destDir, "%(id)s.%(ext)s")
 	args := append(p.baseArgs(outTemplate, quality), rawURL)
+	if report != nil {
+		args = append(p.baseArgs(outTemplate, quality),
+			"--newline", "--progress-template", "download:progress:%(progress._percent_str)s", rawURL)
+	}
 
 	var out []byte
 	var err error
@@ -289,8 +302,7 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 	// on an immediate retry with no code change) - a few retries clear it
 	// without needing a smarter fix.
 	for range 3 {
-		cmd := exec.CommandContext(ctx, p.binPath, args...)
-		out, err = cmd.CombinedOutput()
+		out, err = runYtDlpCommand(ctx, p.binPath, args, report)
 		if err == nil || !strings.Contains(string(out), "HTTP Error 403") {
 			break
 		}
@@ -306,8 +318,7 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 	if err != nil && p.name == "instagram" && strings.Contains(string(out), "No video formats found") {
 		retryArgs := append(p.baseArgs(outTemplate, quality),
 			"--write-thumbnail", "--skip-download", "--ignore-no-formats-error", rawURL)
-		retryCmd := exec.CommandContext(ctx, p.binPath, retryArgs...)
-		retryOut, _ := retryCmd.CombinedOutput()
+		retryOut, _ := runYtDlpCommand(ctx, p.binPath, retryArgs, report)
 		// The thumbnail-only path never fires the after_move print hook, so
 		// go straight to listing what actually landed in destDir.
 		paths, _ := filepath.Glob(filepath.Join(destDir, "*"))
@@ -347,6 +358,54 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 		}
 	}
 	return files, nil
+}
+
+// runYtDlpCommand streams yt-dlp's newline progress records while retaining
+// stdout/stderr for the existing output-path and error handling logic.
+func runYtDlpCommand(ctx context.Context, binPath string, args []string, report func(int)) ([]byte, error) {
+	if report == nil {
+		return exec.CommandContext(ctx, binPath, args...).CombinedOutput()
+	}
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go scanCommandOutput(stdout, &stdoutBuf, report, &wg)
+	go scanCommandOutput(stderr, &stderrBuf, report, &wg)
+	wg.Wait()
+	waitErr := cmd.Wait()
+	stdoutBuf.Write(stderrBuf.Bytes())
+	return stdoutBuf.Bytes(), waitErr
+}
+
+func scanCommandOutput(r io.Reader, dst *bytes.Buffer, report func(int), wg *sync.WaitGroup) {
+	defer wg.Done()
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		dst.WriteString(line)
+		dst.WriteByte('\n')
+		if !strings.HasPrefix(line, "progress:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "progress:"), "%"))
+		percent, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			report(max(0, min(100, int(percent))))
+		}
+	}
 }
 
 // optimizeVideo re-encodes a downloaded video to a visually-lossless CRF so
@@ -390,7 +449,7 @@ func parsePrintedPaths(out string) []string {
 	var paths []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "[") {
+		if line != "" && !strings.HasPrefix(line, "[") && !strings.HasPrefix(line, "progress:") {
 			paths = append(paths, line)
 		}
 	}

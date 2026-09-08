@@ -42,9 +42,17 @@ func NewPornFlipProvider(binPath string, maxSizeMB int) *PornFlipProvider {
 func (p *PornFlipProvider) Download(ctx context.Context, rawURL, destDir string) ([]MediaFile, error) {
 	streamURL, err := p.streamURL(ctx, rawURL)
 	if err != nil {
-		return p.YtDlpProvider.download(ctx, rawURL, destDir, "")
+		return p.YtDlpProvider.download(ctx, rawURL, destDir, "", nil)
 	}
-	return p.YtDlpProvider.download(ctx, streamURL, destDir, "")
+	return p.YtDlpProvider.download(ctx, streamURL, destDir, "", nil)
+}
+
+func (p *PornFlipProvider) DownloadWithProgress(ctx context.Context, rawURL, destDir, _ string, report func(int)) ([]MediaFile, error) {
+	streamURL, err := p.streamURL(ctx, rawURL)
+	if err != nil {
+		return p.YtDlpProvider.download(ctx, rawURL, destDir, "", report)
+	}
+	return p.YtDlpProvider.download(ctx, streamURL, destDir, "", report)
 }
 
 func (p *PornFlipProvider) streamURL(ctx context.Context, rawURL string) (string, error) {

@@ -20,6 +20,12 @@ User (in Telegram) --> sends message containing instagram.com link
   Rate limit check (per user)
         |-- exceeded --> reply "slow down", stop
         v
+  Ask delivery: Direct download / Telegram download / Both
+        |-- direct URL server not configured --> keep picker, explain Telegram-only availability
+        v
+  Ask quality when the provider offers video/audio choices
+        |-- user chooses --> delete the answered picker message
+        v
   Cache lookup: sha256(raw URL) as key
         |-- fresh entry on disk (< CACHE_TTL_SECONDS old) --> skip straight to Send
         |-- miss / expired --> continue
@@ -36,10 +42,13 @@ User (in Telegram) --> sends message containing instagram.com link
   Mark cache entry done (write .done marker, sets the TTL clock)
         |
         v
-  Send:
-    - video  -> sendVideo
-    - photo  -> sendPhoto
-    - carousel (>1 file) -> sendMediaGroup (chunks of <=10)
+  Deliver according to the user's choice:
+    - direct   -> edit status with cache-backed HTTP download button(s)
+    - Telegram -> video/photo/audio/media group
+    - both     -> Telegram media plus HTTP download button(s)
+        |
+        +-- while active, edit one status message every randomized 3-8 seconds
+            (real yt-dlp download percentage; phase estimate for Telegram upload)
         |
         v
   Done. Files stay on disk until CACHE_TTL_SECONDS elapses; a background
