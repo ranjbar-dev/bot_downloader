@@ -47,7 +47,7 @@ User (in Telegram) --> sends message containing instagram.com link
     - Telegram -> video/photo/audio/media group
     - both     -> Telegram media plus HTTP download button(s)
         |
-        +-- while active, edit one status message every randomized 3-8 seconds
+        +-- while active, edit one status message every 5 seconds when its text changes
             (real yt-dlp download percentage; phase estimate for Telegram upload)
         |
         v

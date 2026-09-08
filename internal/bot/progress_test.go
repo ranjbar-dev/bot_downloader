@@ -25,7 +25,9 @@ func TestProgressText(t *testing.T) {
 		percent int
 		want    string
 	}{
-		{phaseDownloading, 20, "⬇️ Downloading... 20%"},
+		{phaseDownloading, 0, "⬇️ Downloading..."},
+		{phaseDownloading, 50, "⬇️ Downloading 50%"},
+		{phaseDownloading, 100, "⬇️ Downloading 100%"},
 		{phaseProcessing, 100, "⚙️ Processing the downloaded media..."},
 		{phaseDirectLink, 100, "🔗 Making the direct download link..."},
 		{phaseUploading, 30, "📤 Uploading to Telegram... 30%"},

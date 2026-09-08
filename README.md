@@ -233,8 +233,9 @@ Then send a >50MB video link through the bot and watch it succeed where it previ
 After a user sends a supported link, the bot asks whether to provide a direct
 download, upload the media to Telegram, or do both. Providers with multiple
 formats ask for video/audio quality after that choice. Each answered picker is
-removed, then one status message is updated every 3-8 seconds with download,
-processing, direct-link, and Telegram-upload progress.
+removed, then one status message shows download, processing, direct-link, and
+Telegram-upload progress. It updates every 5 seconds when its text changes,
+for example `⬇️ Downloading 50%`.
 
 Set `DIRECT_DOWNLOAD_BASE_URL` to enable the **Direct download** and **Both**
 choices. Without it, the bot keeps the picker visible and tells users to choose

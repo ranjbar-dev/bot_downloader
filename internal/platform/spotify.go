@@ -59,7 +59,7 @@ func (p *SpotifyProvider) download(ctx context.Context, rawURL string, destDir s
 		args = append(args, "--max-filesize", fmt.Sprintf("%dM", p.maxSizeMB))
 	}
 	if report != nil {
-		args = append(args, "--newline", "--progress-template", "download:progress:%(progress._percent_str)s")
+		args = append(args, "--progress", "--newline", "--progress-template", "download:progress:%(progress._percent_str)s")
 	}
 	// "ytsearch1:" prefix makes yt-dlp search YouTube and take the top hit,
 	// and guarantees the arg can't be mistaken for a yt-dlp flag.

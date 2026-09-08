@@ -292,7 +292,7 @@ func (p *YtDlpProvider) download(ctx context.Context, rawURL, destDir, quality s
 	args := append(p.baseArgs(outTemplate, quality), rawURL)
 	if report != nil {
 		args = append(p.baseArgs(outTemplate, quality),
-			"--newline", "--progress-template", "download:progress:%(progress._percent_str)s", rawURL)
+			"--progress", "--newline", "--progress-template", "download:progress:%(progress._percent_str)s", rawURL)
 	}
 
 	var out []byte

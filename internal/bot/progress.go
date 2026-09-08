@@ -20,7 +20,7 @@ const (
 )
 
 // statusTracker coalesces frequent downloader events into Telegram edits at
-// randomized 3-8 second intervals, avoiding API spam while still showing life.
+// five-second intervals, avoiding API spam while still showing life.
 type statusTracker struct {
 	j       job
 	mu      sync.Mutex
@@ -56,15 +56,13 @@ func (t *statusTracker) setPhase(phase progressPhase) {
 
 func (t *statusTracker) loop() {
 	defer close(t.doneCh)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 	for {
-		timer := time.NewTimer(time.Duration(3+rand.Intn(6)) * time.Second)
 		select {
-		case <-timer.C:
+		case <-ticker.C:
 			t.tick()
 		case <-t.stopCh:
-			if !timer.Stop() {
-				<-timer.C
-			}
 			return
 		}
 	}
@@ -80,12 +78,15 @@ func (t *statusTracker) tick() {
 		t.mu.Unlock()
 		return
 	}
-	t.last = text
 	t.mu.Unlock()
 
 	if _, _, err := t.j.b.EditMessageText(text, &gotgbot.EditMessageTextOpts{ChatId: t.j.chatID, MessageId: t.j.statusMsgID}); err != nil {
 		log.Println("edit progress message failed:", err)
+		return
 	}
+	t.mu.Lock()
+	t.last = text
+	t.mu.Unlock()
 }
 
 func (t *statusTracker) stop() {
@@ -103,7 +104,7 @@ func progressText(phase progressPhase, percent int) string {
 		return fmt.Sprintf("📤 Uploading to Telegram... %d%%", percent)
 	default:
 		if percent > 0 {
-			return fmt.Sprintf("⬇️ Downloading... %d%%", percent)
+			return fmt.Sprintf("⬇️ Downloading %d%%", percent)
 		}
 		return "⬇️ Downloading..."
 	}
