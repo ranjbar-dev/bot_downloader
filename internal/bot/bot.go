@@ -75,6 +75,7 @@ type job struct {
 	qualities   []platform.Quality // ladder shown for this request, cached so handleQuality resolves against the same list it was built from
 	delivery    deliveryMode
 	statusMsgID int64
+	tracker     *statusTracker
 }
 
 func New(cfg *config.Config, registry *platform.Registry, members *store.Store) *Bot {
@@ -277,21 +278,23 @@ func instagramKeyboard() gotgbot.InlineKeyboardMarkup {
 	}}
 }
 
-// enqueue sends the "Downloading..." status message, then submits j to the
-// worker pool with that message's ID attached so process() can delete it
-// once the content is sent. If the pool is full, the status message is
-// edited to a busy notice instead and the job is dropped.
+// enqueue sends the "In queue..." status message and starts its tracker,
+// then submits j to the worker pool with that message's ID attached so
+// process() can delete it once the content is sent. If the pool is full,
+// the status message is edited to a busy notice and the job is dropped.
 func (bot *Bot) enqueue(b *gotgbot.Bot, j job) error {
-	status, err := b.SendMessage(j.chatID, "⬇️ Downloading...", nil)
+	status, err := b.SendMessage(j.chatID, progressText(phaseQueued, 0), nil)
 	if err != nil {
 		return err
 	}
 	j.statusMsgID = status.MessageId
+	j.tracker = newStatusTracker(j)
 
 	select {
 	case bot.jobs <- j:
 		return nil
 	default:
+		j.tracker.stop()
 		_, _, err := status.EditText(b, "🚦 Bot's busy, try again in a moment.", nil)
 		return err
 	}
@@ -478,7 +481,8 @@ func (bot *Bot) worker() {
 }
 
 func (bot *Bot) process(j job) {
-	tracker := newStatusTracker(j)
+	tracker := j.tracker
+	tracker.setPhase(phaseDownloading)
 	defer tracker.stop()
 
 	key := cache.Key(j.rawURL, j.quality)

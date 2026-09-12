@@ -13,7 +13,8 @@ import (
 type progressPhase int
 
 const (
-	phaseDownloading progressPhase = iota
+	phaseQueued progressPhase = iota
+	phaseDownloading
 	phaseProcessing
 	phaseDirectLink
 	phaseUploading
@@ -33,7 +34,7 @@ type statusTracker struct {
 }
 
 func newStatusTracker(j job) *statusTracker {
-	t := &statusTracker{j: j, phase: phaseDownloading, stopCh: make(chan struct{}), doneCh: make(chan struct{})}
+	t := &statusTracker{j: j, phase: phaseQueued, stopCh: make(chan struct{}), doneCh: make(chan struct{})}
 	go t.loop()
 	return t
 }
@@ -96,6 +97,8 @@ func (t *statusTracker) stop() {
 
 func progressText(phase progressPhase, percent int) string {
 	switch phase {
+	case phaseQueued:
+		return "🚦 In queue..."
 	case phaseProcessing:
 		return "⚙️ Processing the downloaded media..."
 	case phaseDirectLink:
