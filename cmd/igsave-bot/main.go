@@ -46,7 +46,7 @@ func main() {
 			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
 		platform.NewXHamsterProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 		platform.NewYtDlpProviderWithQuality("wow",
-			[]string{"wow.xxx", "www.wow.xxx"},
+			[]string{"wow.xxx", "www.wow.xxx", "wowxxx.to", "www.wowxxx.to"},
 			cfg.YtDlpPath, cfg.MaxUploadMB, platform.VideoQualities),
 		platform.NewPornFlipProvider(cfg.YtDlpPath, cfg.MaxUploadMB),
 		platform.NewYtDlpProviderWithQuality("pornzog",
