@@ -167,6 +167,7 @@ func (p *YtDlpProvider) probeQualities(ctx context.Context, rawURL string) ([]Qu
 	args := []string{
 		"--no-playlist", "--no-warnings", "-j",
 		"--extractor-args", "youtube:player_client=android_vr",
+		"--extractor-args", "generic:impersonate",
 		rawURL,
 	}
 	out, err := exec.CommandContext(ctx, p.binPath, args...).Output()
@@ -276,6 +277,7 @@ func (p *YtDlpProvider) baseArgs(outTemplate, quality string) []string {
 		// android_vr still gets full separate-stream DASH (144p-1440p+) and
 		// actually completes the download. Harmless no-op on non-YouTube hosts.
 		"--extractor-args", "youtube:player_client=android_vr",
+		"--extractor-args", "generic:impersonate",
 	}
 	if p.maxSizeMB > 0 {
 		args = append(args, "--max-filesize", fmt.Sprintf("%dM", p.maxSizeMB))

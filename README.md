@@ -82,8 +82,10 @@ go version   # sanity check, should print go1.24+
 # (PEP 668 "externally-managed-environment") without extra venv/pipx setup
 # this doesn't need. `yt-dlp -U` (wired into the systemd timer below) self-
 # updates this binary in place.
-sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp
 sudo chmod +x /usr/local/bin/yt-dlp
+# yt-dlp_linux (PyInstaller build) bundles curl_cffi, needed for the generic:impersonate
+# arg (Cloudflare-protected sites like wow.xxx). The plain `yt-dlp` script does not.
 yt-dlp --version   # sanity check
 ```
 
